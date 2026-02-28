@@ -34,6 +34,34 @@ end_per_suite(_Config) ->
 init_per_testcase(convert_new_msgs_to_old_format, Config) ->
     %% no setup necessary,
     Config;
+init_per_testcase(consistent_hash_sync_node_test, Config) ->
+    vmq_test_utils:seed_rand(Config),
+    %% Start with 3 nodes initially; the test will start a 4th node
+    NodeWithPorts =
+        [vmq_cluster_test_utils:random_node_with_port(consistent_hash_sync_node_test)
+         || _I <- lists:seq(1, 3)],
+    Nodes =
+        vmq_cluster_test_utils:pmap(fun({N, Port}) ->
+                                       {ok, Peer, Node} =
+                                           vmq_cluster_test_utils:start_node(
+                                               N, Config, consistent_hash_sync_node_test
+                                           ),
+                                       {ok, _} =
+                                           rpc:call(Node,
+                                                    vmq_server_cmd,
+                                                    listener_start,
+                                                    [Port, []]),
+                                       ok = rpc:call(Node, vmq_auth, register_hooks, []),
+                                       {Peer, Node, Port}
+                                    end,
+                                    NodeWithPorts),
+    {_, CoverNodes, _} = lists:unzip3(Nodes),
+    {ok, _} = cover:start([node() | CoverNodes]),
+    %% Pre-generate a 4th node name and port for later joining
+    FourthNodeWithPort = vmq_cluster_test_utils:random_node_with_port(
+        consistent_hash_sync_node_test
+    ),
+    [{nodes, Nodes}, {fourth_node, FourthNodeWithPort} | Config];
 init_per_testcase(Case, Config) ->
     vmq_test_utils:seed_rand(Config),
     Config1 =
@@ -92,7 +120,8 @@ all() ->
      cross_node_publish_subscribe,
      restarted_node_has_no_stale_sessions,
      routing_table_survives_node_restart,
-     convert_new_msgs_to_old_format].
+     convert_new_msgs_to_old_format,
+     consistent_hash_sync_node_test].
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %%% Actual Tests
@@ -1116,6 +1145,95 @@ subscribe(Socket, Topic, QoS) ->
     Suback = packet:gen_suback(1, QoS),
     ok = gen_tcp:send(Socket, Subscribe),
     ok = packet:expect_packet(Socket, "suback", Suback).
+
+consistent_hash_sync_node_test(Config) ->
+    ok = ensure_cluster(Config),
+    {_, Nodes3} = lists:keyfind(nodes, 1, Config),
+    {_, NodeNames3, _} = lists:unzip3(Nodes3),
+
+    %% Generate test keys and collect sync_node results from all 3 nodes
+    Keys = [{sync_test_key, I} || I <- lists:seq(1, 100)],
+    Mapping3 =
+        lists:foldl(
+            fun(Key, Acc) ->
+                Results =
+                    [rpc:call(N, vmq_reg_sync, sync_node, [Key]) || N <- NodeNames3],
+                %% All nodes must agree on the sync node for each key
+                [First | _] = Results,
+                lists:foreach(
+                    fun(R) ->
+                        ?assertEqual(First, R)
+                    end,
+                    Results
+                ),
+                maps:put(Key, First, Acc)
+            end,
+            #{},
+            Keys
+        ),
+
+    %% Verify that keys are distributed across multiple nodes, not all on one
+    UniqueNodes3 = lists:usort(maps:values(Mapping3)),
+    ?assert(length(UniqueNodes3) > 1),
+
+    %% Start and join a 4th node
+    {FourthName, FourthPort} = proplists:get_value(fourth_node, Config),
+    {ok, FourthPeer, FourthNode} =
+        vmq_cluster_test_utils:start_node(
+            FourthName, Config, consistent_hash_sync_node_test
+        ),
+    try
+        {ok, _} = rpc:call(FourthNode, vmq_server_cmd, listener_start, [FourthPort, []]),
+        ok = rpc:call(FourthNode, vmq_auth, register_hooks, []),
+        {_, Node1, _} = hd(Nodes3),
+        {ok, _} = rpc:call(FourthNode, vmq_server_cmd, node_join, [Node1]),
+        AllNodeNames = lists:sort([FourthNode | NodeNames3]),
+        ok = vmq_cluster_test_utils:wait_until_joined(AllNodeNames, AllNodeNames),
+        vmq_cluster_test_utils:wait_until_ready(AllNodeNames),
+
+        %% Re-check: all 4 nodes must agree, and majority of keys should be stable
+        StableCount =
+            lists:foldl(
+                fun(Key, Acc) ->
+                    Results =
+                        [rpc:call(N, vmq_reg_sync, sync_node, [Key]) || N <- AllNodeNames],
+                    [First | _] = Results,
+                    lists:foreach(
+                        fun(R) ->
+                            ?assertEqual(First, R)
+                        end,
+                        Results
+                    ),
+                    case maps:get(Key, Mapping3) =:= First of
+                        true -> Acc + 1;
+                        false -> Acc
+                    end
+                end,
+                0,
+                Keys
+            ),
+
+        StablePct = StableCount / length(Keys),
+        ct:pal(
+            "consistent_hash_sync_node_test: ~.1f% of keys stable after adding 4th node",
+            [StablePct * 100]
+        ),
+        ?assert(StablePct > 0.60),
+
+        %% Verify that the 4th node is actually receiving some keys
+        Mapping4 = maps:from_list([
+            {Key, rpc:call(FourthNode, vmq_reg_sync, sync_node, [Key])}
+         || Key <- Keys
+        ]),
+        KeysOnFourth = length([K || K <- Keys, maps:get(K, Mapping4) =:= FourthNode]),
+        ct:pal("consistent_hash_sync_node_test: ~p of ~p keys assigned to 4th node", [
+            KeysOnFourth, length(Keys)
+        ]),
+        ?assert(KeysOnFourth > 0)
+    after
+        vmq_cluster_test_utils:stop_peer(FourthPeer, FourthNode)
+    end,
+    Config.
 
 ensure_cluster(Config) ->
     vmq_cluster_test_utils:ensure_cluster(Config).

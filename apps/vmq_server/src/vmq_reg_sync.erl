@@ -22,7 +22,8 @@
     sync/3, sync/4,
     async/3, async/4,
     done/3,
-    status/1, status/2
+    status/1, status/2,
+    sync_node/1
 ]).
 
 %% gen_server callbacks
@@ -108,9 +109,34 @@ status(SyncKey, SyncNode) ->
     gen_server:call({?SERVER, SyncNode}, {status, SyncKey}).
 
 sync_node(SyncKey) ->
-    Nodes = vmq_cluster:nodes(),
-    I = erlang:phash2(SyncKey) rem length(Nodes) + 1,
-    lists:nth(I, lists:sort(Nodes)).
+    case ensure_ring() of
+        {error, no_nodes} ->
+            node();
+        Ring ->
+            vmq_consistent_hash:lookup(SyncKey, Ring)
+    end.
+
+ensure_ring() ->
+    CurrentNodes = lists:sort(vmq_cluster:nodes()),
+    case persistent_term:get({vmq_consistent_hash, ring}, undefined) of
+        undefined ->
+            rebuild_ring(CurrentNodes);
+        {CachedNodes, Ring} ->
+            case CachedNodes =:= CurrentNodes of
+                true -> Ring;
+                false -> rebuild_ring(CurrentNodes)
+            end
+    end.
+
+rebuild_ring(Nodes) ->
+    case Nodes of
+        [] ->
+            {error, no_nodes};
+        _ ->
+            Ring = vmq_consistent_hash:new(Nodes, 256),
+            persistent_term:put({vmq_consistent_hash, ring}, {Nodes, Ring}),
+            Ring
+    end.
 
 %%%===================================================================
 %%% gen_server callbacks

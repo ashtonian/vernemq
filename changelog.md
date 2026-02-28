@@ -7,6 +7,7 @@
 - Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
 - Enhancement: Don't log msg payload in pubauth errors.
 - Bugfix: active connections count for WS in metrics and listener info.
+- Enhancement: replace modulo-based sync node selection in vmq_reg_sync with consistent hash ring to prevent key remapping during cluster membership changes.
 
 
 ## VerneMQ 2.1.1
