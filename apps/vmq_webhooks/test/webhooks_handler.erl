@@ -37,38 +37,76 @@ stop_endpoint_clear() ->
 %% Cowboy callbacks
 init(Req, State) ->
     Hook = cowboy_req:header(<<"vernemq-hook">>, Req),
+    ContentType = cowboy_req:header(<<"content-type">>, Req),
     {ok, Body, Req1} = cowboy_req:read_body(Req),
     ?DEBUG andalso io:format(user, ">>> ~s~n", [Body]),
+    Format = detect_format(ContentType),
+    Decoded = decode_body(Format, Body),
+    RespCT = response_content_type(Format),
     case cowboy_req:path(Req) of
         <<"/">> ->
-            {Code, Resp} = process_hook(Hook, vmq_json:decode(Body, [{labels, atom}, return_maps])),
+            {Code, Resp} = process_hook(Hook, Decoded),
             Req2 =
                 cowboy_req:reply(Code,
-                                 #{<<"content-type">> => <<"text/json">>},
-                                 encode(Resp), Req1),
+                                 #{<<"content-type">> => RespCT},
+                                 encode_body(Format, Resp), Req1),
             {ok, Req2, State};
         <<"/cache">> ->
-            {Code, Resp} = process_cache_hook(Hook, vmq_json:decode(Body, [{labels, atom}, return_maps])),
+            {Code, Resp} = process_cache_hook(Hook, Decoded),
             Req2 =
                 cowboy_req:reply(Code,
-                                 #{<<"content-type">> => <<"text/json">>,
+                                 #{<<"content-type">> => RespCT,
                                    <<"Cache-control">> => <<"max-age=86400">>},
-                                 encode(Resp), Req1),
+                                 encode_body(Format, Resp), Req1),
             {ok, Req2, State};
         <<"/cache1s">> ->
-            {Code, Resp} = process_cache_hook(Hook, vmq_json:decode(Body, [{labels, atom}, return_maps])),
+            {Code, Resp} = process_cache_hook(Hook, Decoded),
             Req2 =
                 cowboy_req:reply(Code,
-                                 #{<<"content-type">> => <<"text/json">>,
+                                 #{<<"content-type">> => RespCT,
                                    <<"Cache-control">> => <<"max-age=1">>},
-                                 encode(Resp), Req1),
+                                 encode_body(Format, Resp), Req1),
             {ok, Req2, State}
     end.
 
-encode(Term) ->
+detect_format(<<"application/x-msgpack">>) -> msgpack;
+detect_format(_) -> json.
+
+decode_body(json, Body) ->
+    vmq_json:decode(Body, [{labels, atom}, return_maps]);
+decode_body(msgpack, Body) ->
+    {ok, Decoded} = msgpack:unpack(Body, [{map_format, map}, {unpack_str, as_binary}]),
+    binary_keys_to_atoms(Decoded).
+
+encode_body(json, Term) ->
     Encoded = vmq_json:encode(Term),
     ?DEBUG andalso io:format(user, "<<< ~s~n", [Encoded]),
-    Encoded.
+    Encoded;
+encode_body(msgpack, Term) ->
+    msgpack:pack(Term, [{map_format, map}]).
+
+response_content_type(json) -> <<"text/json">>;
+response_content_type(msgpack) -> <<"application/x-msgpack">>.
+
+binary_keys_to_atoms(M) when is_map(M) ->
+    maps:fold(
+        fun(K, V, Acc) ->
+            maps:put(binary_key_to_atom(K), binary_keys_to_atoms(V), Acc)
+        end,
+        #{},
+        M
+    );
+binary_keys_to_atoms(L) when is_list(L) ->
+    [binary_keys_to_atoms(E) || E <- L];
+binary_keys_to_atoms(V) ->
+    V.
+
+binary_key_to_atom(K) when is_binary(K) ->
+    try binary_to_existing_atom(K, utf8)
+    catch error:badarg -> binary_to_atom(K, utf8)
+    end;
+binary_key_to_atom(K) ->
+    K.
 
 
 process_cache_hook(<<"auth_on_register">>, #{username := SenderPid}) ->

@@ -72,8 +72,20 @@
     {default, 5000}
 ]}.
 
+%% @doc Set the payload format for the webhook. json uses the existing
+%% JSON encoding via jsx, msgpack uses MsgPack binary encoding which
+%% is faster and supports native binary payloads (no base64 needed).
+%% Defaults to json.
+{mapping, "vmq_webhooks.$name.payload_format", "vmq_webhooks.user_webhooks", [
+    {datatype, {enum, [json, msgpack]}},
+    {default, json},
+    {commented, "json"},
+    {include_default, "webhook1"},
+    hidden
+]}.
+
 {translation, "vmq_webhooks.user_webhooks", fun(Conf) ->
-    Suffixes = ["hook", "endpoint", "base64encode", "no_payload", "response_timeout"],
+    Suffixes = ["hook", "endpoint", "base64encode", "no_payload", "response_timeout", "payload_format"],
     UNames =
         [
             proplists:get_all_values(
@@ -113,6 +125,12 @@
                                 ".response_timeout",
                             Conf,
                             8000
+                        ),
+                        payload_format => cuttlefish:conf_get(
+                            "vmq_webhooks." ++ SortName ++
+                                ".payload_format",
+                            Conf,
+                            json
                         )
                     }
             }}

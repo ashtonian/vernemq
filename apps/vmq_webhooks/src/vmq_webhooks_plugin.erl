@@ -1031,9 +1031,10 @@ maybe_call_endpoint(Endpoint, EOpts, Hook, Args) ->
 ) -> any().
 call_endpoint(Endpoint, EOpts, Hook, Args0) ->
     Method = post,
+    Format = maps:get(payload_format, EOpts, json),
     HookBin = maps:get(Hook, persistent_term:get(vmq_webhooks_hook_bins)),
     Headers = [
-        {<<"Content-Type">>, <<"application/json">>},
+        {<<"Content-Type">>, vmq_webhooks_encoder:content_type(Format)},
         {<<"vernemq-hook">>, HookBin}
     ],
     Opts =
@@ -1048,16 +1049,16 @@ call_endpoint(Endpoint, EOpts, Hook, Args0) ->
             {ok, 200, RespHeaders, CRef} ->
                 case hackney:body(CRef) of
                     {ok, Body} ->
-                        case vmq_json:is_json(Body) of
+                        case vmq_webhooks_encoder:is_valid(Format, Body) of
                             true ->
                                 handle_response(
                                     Hook,
                                     parse_headers(RespHeaders),
-                                    vmq_json:decode(Body, [{labels, binary}, {return_maps, false}]),
+                                    vmq_webhooks_encoder:decode(Format, Body),
                                     EOpts
                                 );
                             false ->
-                                {error, received_payload_not_json}
+                                {error, received_payload_not_valid}
                         end;
                     {error, _} = E ->
                         hackney:close(CRef),
@@ -1303,6 +1304,8 @@ retain_handling(Val) ->
     throw({invalid_retain_handling, Val}).
 
 -spec norm_payload([{atom(), _}], map()) -> [any()].
+norm_payload(Mods, #{payload_format := msgpack}) ->
+    Mods;
 norm_payload(Mods, EOpts) ->
     lists:map(
         fun
@@ -1369,7 +1372,8 @@ encode_payload(Hook, Args, Opts) when
             end,
             Args
         ),
-    vmq_json:encode(RemappedKeys);
+    Format = maps:get(payload_format, Opts, json),
+    vmq_webhooks_encoder:encode(Format, RemappedKeys);
 encode_payload(Hook, Args, Opts) when
     Hook =:= auth_on_subscribe; Hook =:= on_subscribe
 ->
@@ -1396,22 +1400,31 @@ encode_payload(Hook, Args, Opts) when
             end,
             Args
         ),
-    vmq_json:encode(RemappedKeys);
+    Format = maps:get(payload_format, Opts, json),
+    vmq_webhooks_encoder:encode(Format, RemappedKeys);
 encode_payload(_, Args, Opts) ->
+    Format = maps:get(payload_format, Opts, json),
     RemappedKeys =
         lists:map(
             fun
-                ({addr, V}) -> {peer_addr, V};
-                ({port, V}) -> {peer_port, V};
-                ({client_id, V}) -> {client_id, V};
-                ({properties, V}) -> {properties, encode_props(V, Opts)};
-                ({payload, V}) -> {payload, b64encode(V, Opts)};
-                (#{client_cert := C} = _V) -> {client_cert, b64encode(C, Opts)};
-                (V) -> V
+                ({addr, V}) ->
+                    {peer_addr, V};
+                ({port, V}) ->
+                    {peer_port, V};
+                ({client_id, V}) ->
+                    {client_id, V};
+                ({properties, V}) ->
+                    {properties, encode_props(V, Opts)};
+                ({payload, V}) ->
+                    {payload, maybe_b64encode_payload(V, Format, Opts)};
+                (#{client_cert := C} = _V) ->
+                    {client_cert, maybe_b64encode_payload(C, Format, Opts)};
+                (V) ->
+                    V
             end,
             Args
         ),
-    vmq_json:encode(RemappedKeys).
+    vmq_webhooks_encoder:encode(Format, RemappedKeys).
 
 -spec encode_props(properties(), map()) -> any().
 encode_props(Props, Opts) when is_map(Props) ->
@@ -1457,6 +1470,10 @@ maybe_b64decode(V, _) -> base64:decode(V).
 -spec b64encode(_, map()) -> any().
 b64encode(V, #{base64_payload := false}) -> V;
 b64encode(V, _) -> base64:encode(V).
+
+-spec maybe_b64encode_payload(_, atom(), map()) -> any().
+maybe_b64encode_payload(V, msgpack, _Opts) -> V;
+maybe_b64encode_payload(V, _, Opts) -> b64encode(V, Opts).
 
 -spec b64decode(_, map()) -> any().
 b64decode(V, #{base64_payload := false}) -> V;

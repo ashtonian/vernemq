@@ -111,7 +111,13 @@ http() ->
         cache_expired_entry,
         cli_allow_query_parameters_test,
         metrics_test,
-        async_overflow_test
+        async_overflow_test,
+
+        %% MsgPack format tests
+        msgpack_auth_on_register_test,
+        msgpack_auth_on_publish_test,
+        msgpack_on_publish_test,
+        msgpack_on_deliver_test
     ].
 
 https() ->
@@ -931,6 +937,55 @@ find_metric_value(Id) ->
     ),
     Value.
 
+%% MsgPack format tests
+msgpack_auth_on_register_test(_) ->
+    register_hook_msgpack(auth_on_register, ?ENDPOINT),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]
+    ),
+    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]
+    ),
+    deregister_hook(auth_on_register, ?ENDPOINT).
+
+msgpack_auth_on_publish_test(_) ->
+    register_hook_msgpack(auth_on_publish, ?ENDPOINT),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
+    deregister_hook(auth_on_publish, ?ENDPOINT).
+
+msgpack_on_publish_test(_) ->
+    register_hook_msgpack(on_publish, ?ENDPOINT),
+    Self = pid_to_bin(self()),
+    [next] = vmq_plugin:all(
+        on_publish,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
+    ok = exp_response(on_publish_ok),
+    deregister_hook(on_publish, ?ENDPOINT).
+
+msgpack_on_deliver_test(_) ->
+    register_hook_msgpack(on_deliver, ?ENDPOINT),
+    Self = pid_to_bin(self()),
+    ok = vmq_plugin:all_till_ok(
+        on_deliver,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
+    ok = exp_response(on_deliver_ok),
+    deregister_hook(on_deliver, ?ENDPOINT).
+
 %% HTTPS Tests
 
 %% Given a CA that signed the endpoint's server certificate, the webhook works
@@ -1052,6 +1107,17 @@ register_hook(Hook, Endpoint) ->
         "hook=" ++ atom_to_list(Hook),
         "endpoint=" ++ Endpoint,
         "--base64payload=false"
+    ]).
+
+register_hook_msgpack(Hook, Endpoint) ->
+    ok = clique:run([
+        "vmq-admin",
+        "webhooks",
+        "register",
+        "hook=" ++ atom_to_list(Hook),
+        "endpoint=" ++ Endpoint,
+        "--base64payload=false",
+        "--payload_format=msgpack"
     ]).
 
 deregister_hook(Hook, Endpoint) ->

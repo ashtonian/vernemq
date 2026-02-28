@@ -1,5 +1,9 @@
 # Changelog
 
+ - Add opt-in MsgPack encoding support per webhook via
+   `vmq_webhooks.$name.payload_format = msgpack` or CLI
+   `--payload_format=msgpack`. MsgPack provides faster encode/decode
+   and native binary payloads (no base64 needed). Default remains JSON.
  - Bugfix: Close hackney connection reference on `hackney:body/1` error to
    prevent connection pool leaks.
  - Add periodic cache sweep to purge expired `auth_on_*` cache entries that
