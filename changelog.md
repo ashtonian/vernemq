@@ -7,7 +7,15 @@
 - Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
 - Enhancement: Don't log msg payload in pubauth errors.
 - Bugfix: active connections count for WS in metrics and listener info.
-- New feature: Cluster auto-balance (Layer 1). Monitors connection distribution across cluster nodes and exposes an HTTP readiness endpoint (`GET /api/balance-health`) that returns 503 when a node has more connections than the cluster average by a configurable threshold. Designed for use as a Kubernetes readiness probe or NLB health check to steer new connections away from overloaded nodes. Disabled by default (`balance_enabled = off`). New config settings: `balance_enabled`, `balance_threshold`, `balance_hysteresis`, `balance_min_connections`, `balance_check_interval`. New Prometheus metrics: `balance_is_accepting`, `balance_local_connections`, `balance_cluster_avg`, `balance_is_enabled`.
+- New feature: Cluster auto-balance.
+  - Monitors connection distribution across cluster nodes and exposes an HTTP readiness endpoint (`GET /api/balance-health`) that returns 503 when a node exceeds the cluster average by a configurable threshold.
+  - Designed for use as a Kubernetes readiness probe or NLB health check to steer new connections away from overloaded nodes.
+  - Disabled by default (`balance_enabled = off`).
+  - New config settings: `balance_enabled`, `balance_reject_enabled`, `balance_threshold`, `balance_hysteresis`, `balance_min_connections`, `balance_check_interval`.
+  - New Prometheus metrics: `balance_is_accepting`, `balance_local_connections`, `balance_cluster_avg`, `balance_is_enabled`, `balance_rejections`.
+  - MQTT connection rejection is controlled by a separate `balance_reject_enabled` flag (default `off`), decoupled from `balance_enabled`. This allows using the HTTP health endpoint for load balancer steering without hard-rejecting MQTT connections.
+  - Auth hooks (`auth_on_register` / `auth_on_register_m5`) are dynamically registered only when both flags are on, eliminating per-connection overhead when rejection is disabled.
+  - Existing sessions are allowed to reconnect even when rejecting.
 
 
 ## VerneMQ 2.1.1

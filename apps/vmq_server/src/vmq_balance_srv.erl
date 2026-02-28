@@ -21,7 +21,8 @@
 -export([
     start_link/0,
     is_accepting/0,
-    balance_stats/0
+    balance_stats/0,
+    incr_rejections/0
 ]).
 
 %% gen_server callbacks
@@ -51,7 +52,9 @@
     hysteresis = ?DEFAULT_HYSTERESIS :: float(),
     min_connections = ?DEFAULT_MIN_CONNECTIONS :: non_neg_integer(),
     check_interval = ?DEFAULT_CHECK_INTERVAL :: pos_integer(),
-    tref :: reference() | undefined
+    tref :: reference() | undefined,
+    rejection_count = 0 :: non_neg_integer(),
+    hooks_registered = false :: boolean()
 }).
 
 %%%===================================================================
@@ -77,40 +80,49 @@ is_accepting() ->
         IsAccepting :: non_neg_integer(),
         LocalConnections :: non_neg_integer(),
         ClusterAvg :: non_neg_integer(),
-        IsEnabled :: non_neg_integer()
+        IsEnabled :: non_neg_integer(),
+        RejectionCount :: non_neg_integer()
     }.
 balance_stats() ->
     try
         gen_server:call(?SERVER, balance_stats, 1000)
     catch
-        exit:{timeout, _} -> {1, 0, 0, 0};
-        exit:{noproc, _} -> {1, 0, 0, 0};
-        _:_ -> {1, 0, 0, 0}
+        exit:{timeout, _} -> {1, 0, 0, 0, 0};
+        exit:{noproc, _} -> {1, 0, 0, 0, 0};
+        _:_ -> {1, 0, 0, 0, 0}
     end.
+
+-spec incr_rejections() -> ok.
+incr_rejections() ->
+    gen_server:cast(?SERVER, incr_rejections).
 
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
 
 init([]) ->
+    process_flag(trap_exit, true),
     Enabled = vmq_config:get_env(balance_enabled, false),
+    RejectEnabled = vmq_config:get_env(balance_reject_enabled, false),
     Threshold = parse_float_env(balance_threshold, ?DEFAULT_THRESHOLD),
     Hysteresis = parse_float_env(balance_hysteresis, ?DEFAULT_HYSTERESIS),
     MinConnections = vmq_config:get_env(balance_min_connections, ?DEFAULT_MIN_CONNECTIONS),
     CheckInterval = vmq_config:get_env(balance_check_interval, ?DEFAULT_CHECK_INTERVAL),
     TRef = schedule_check(CheckInterval),
     ?LOG_INFO(
-        "vmq_balance_srv starting: enabled=~p, threshold=~p, hysteresis=~p, "
+        "starting: enabled=~p, reject_enabled=~p, threshold=~p, hysteresis=~p, "
         "min_connections=~p, check_interval=~pms",
-        [Enabled, Threshold, Hysteresis, MinConnections, CheckInterval]
+        [Enabled, RejectEnabled, Threshold, Hysteresis, MinConnections, CheckInterval]
     ),
+    HooksRegistered = maybe_update_hooks(false, Enabled andalso RejectEnabled),
     {ok, #state{
         enabled = Enabled,
         threshold = Threshold,
         hysteresis = Hysteresis,
         min_connections = MinConnections,
         check_interval = CheckInterval,
-        tref = TRef
+        tref = TRef,
+        hooks_registered = HooksRegistered
     }}.
 
 handle_call(is_accepting, _From, #state{accepting = Accepting, enabled = Enabled} = State) ->
@@ -122,35 +134,59 @@ handle_call(balance_stats, _From, #state{} = State) ->
         accepting = Accepting,
         local_count = LocalCount,
         cluster_avg = ClusterAvg,
-        enabled = Enabled
+        enabled = Enabled,
+        rejection_count = RejectionCount
     } = State,
     EffectiveAccepting = (not Enabled) orelse Accepting,
     Reply = {
         bool_to_int(EffectiveAccepting),
         LocalCount,
         round(ClusterAvg),
-        bool_to_int(Enabled)
+        bool_to_int(Enabled),
+        RejectionCount
     },
     {reply, Reply, State};
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 
+handle_cast(incr_rejections, #state{rejection_count = Count} = State) ->
+    {noreply, State#state{rejection_count = Count + 1}};
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(check_balance, State) ->
     Enabled = vmq_config:get_env(balance_enabled, false),
+    RejectEnabled = vmq_config:get_env(balance_reject_enabled, false),
     Interval = vmq_config:get_env(balance_check_interval, ?DEFAULT_CHECK_INTERVAL),
+    ShouldHaveHooks = Enabled andalso RejectEnabled,
+    NewHooksRegistered = maybe_update_hooks(State#state.hooks_registered, ShouldHaveHooks),
     NewState =
         case Enabled of
             true -> do_balance_check(State#state{enabled = true});
-            false -> State#state{enabled = false}
+            false -> State#state{enabled = false, accepting = true}
         end,
     TRef = schedule_check(Interval),
-    {noreply, NewState#state{check_interval = Interval, tref = TRef}};
+    {noreply, NewState#state{
+        check_interval = Interval,
+        tref = TRef,
+        hooks_registered = NewHooksRegistered
+    }};
 handle_info(_Info, State) ->
     {noreply, State}.
 
+terminate(_Reason, #state{tref = TRef, hooks_registered = true}) ->
+    cancel_timer(TRef),
+    log_plugin_result(
+        "disable",
+        auth_on_register,
+        vmq_plugin_mgr:disable_module_plugin(vmq_balance_hook, auth_on_register, 5)
+    ),
+    log_plugin_result(
+        "disable",
+        auth_on_register_m5,
+        vmq_plugin_mgr:disable_module_plugin(vmq_balance_hook, auth_on_register_m5, 6)
+    ),
+    ok;
 terminate(_Reason, #state{tref = TRef}) ->
     cancel_timer(TRef),
     ok.
@@ -161,6 +197,36 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+
+%% @doc Register or deregister balance hooks based on state transitions.
+%% Only calls enable/disable on actual transitions to avoid redundant work.
+maybe_update_hooks(true, true) ->
+    true;
+maybe_update_hooks(false, false) ->
+    false;
+maybe_update_hooks(false, true) ->
+    R1 = vmq_plugin_mgr:enable_module_plugin(vmq_balance_hook, auth_on_register, 5),
+    R2 = vmq_plugin_mgr:enable_module_plugin(vmq_balance_hook, auth_on_register_m5, 6),
+    log_plugin_result("enable", auth_on_register, R1),
+    log_plugin_result("enable", auth_on_register_m5, R2),
+    R1 =:= ok andalso R2 =:= ok;
+maybe_update_hooks(true, false) ->
+    log_plugin_result(
+        "disable",
+        auth_on_register,
+        vmq_plugin_mgr:disable_module_plugin(vmq_balance_hook, auth_on_register, 5)
+    ),
+    log_plugin_result(
+        "disable",
+        auth_on_register_m5,
+        vmq_plugin_mgr:disable_module_plugin(vmq_balance_hook, auth_on_register_m5, 6)
+    ),
+    false.
+
+log_plugin_result(_Action, _Hook, ok) ->
+    ok;
+log_plugin_result(Action, Hook, {error, Reason}) ->
+    ?LOG_WARNING("failed to ~s hook ~p: ~p", [Action, Hook, Reason]).
 
 do_balance_check(State) ->
     #state{
@@ -186,8 +252,8 @@ do_balance_check(State) ->
 
     case WasAccepting =/= NewAccepting of
         true ->
-            ?LOG_NOTICE(
-                "vmq_balance_srv: accepting changed ~p -> ~p "
+            ?LOG_WARNING(
+                "accepting changed ~p -> ~p "
                 "(local=~p, avg=~.1f, total=~p, nodes=~p)",
                 [
                     WasAccepting,
@@ -255,14 +321,14 @@ collect_remote_counts([_Node | RestNodes], [], Acc) ->
     %% Fewer results than nodes (shouldn't happen with multicall, but be safe)
     collect_remote_counts(RestNodes, [], Acc);
 collect_remote_counts([Node | RestNodes], [{badrpc, Reason} | RestResults], Acc) ->
-    ?LOG_DEBUG("vmq_balance_srv: RPC to ~p failed: ~p", [Node, Reason]),
+    ?LOG_DEBUG("RPC to ~p failed: ~p", [Node, Reason]),
     collect_remote_counts(RestNodes, RestResults, Acc);
 collect_remote_counts([Node | RestNodes], [{MQTTCount, WSCount} | RestResults], Acc) when
     is_integer(MQTTCount), is_integer(WSCount)
 ->
     collect_remote_counts(RestNodes, RestResults, Acc#{Node => MQTTCount + WSCount});
 collect_remote_counts([Node | RestNodes], [_Other | RestResults], Acc) ->
-    ?LOG_DEBUG("vmq_balance_srv: unexpected RPC result from ~p", [Node]),
+    ?LOG_DEBUG("unexpected RPC result from ~p", [Node]),
     collect_remote_counts(RestNodes, RestResults, Acc).
 
 -spec compute_accepting(

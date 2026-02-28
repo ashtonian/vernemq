@@ -41,24 +41,37 @@ end_per_testcase(_, Config) ->
 
 all() ->
     [
-     %% vmq_balance_srv tests
-     balance_srv_starts_test,
-     balance_srv_disabled_always_accepts_test,
-     balance_srv_enabled_accepts_below_threshold_test,
-     balance_srv_stats_returns_tuple_test,
+        %% vmq_balance_srv tests
+        balance_srv_starts_test,
+        balance_srv_disabled_always_accepts_test,
+        balance_srv_enabled_accepts_below_threshold_test,
+        balance_srv_stats_returns_tuple_test,
+        balance_stats_5tuple_test,
 
-     %% HTTP endpoint tests
-     balance_http_returns_200_when_disabled_test,
-     balance_http_returns_200_when_accepting_test,
-     balance_http_json_format_test,
+        %% Hook tests
+        hook_registered_test,
+        hook_not_registered_when_reject_disabled_test,
+        hook_dynamic_registration_test,
+        hook_dynamic_toggle_via_timer_test,
+        hook_terminate_deregisters_test,
+        hook_accepts_when_disabled_test,
+        hook_accepts_when_below_threshold_test,
+        hook_rejects_when_overloaded_test,
+        hook_allows_session_takeover_test,
+        hook_rejection_counter_test,
 
-     %% Metrics tests
-     balance_metrics_exposed_in_prometheus_test,
-     balance_metrics_default_values_test,
+        %% HTTP endpoint tests
+        balance_http_returns_200_when_disabled_test,
+        balance_http_returns_200_when_accepting_test,
+        balance_http_json_format_test,
 
-     %% Integration: single-node balance behavior
-     balance_single_node_always_accepts_test,
-     balance_enabled_single_node_always_accepts_test
+        %% Metrics tests
+        balance_metrics_exposed_in_prometheus_test,
+        balance_metrics_default_values_test,
+
+        %% Integration: single-node balance behavior
+        balance_single_node_always_accepts_test,
+        balance_enabled_single_node_always_accepts_test
     ].
 
 %% ===================================================================
@@ -78,8 +91,8 @@ balance_srv_disabled_always_accepts_test(_Config) ->
 balance_srv_enabled_accepts_below_threshold_test(_Config) ->
     %% Enable balance and verify that with 0 connections (below min_connections),
     %% the node still accepts
-    application:set_env(vmq_server, balance_enabled, true),
-    application:set_env(vmq_server, balance_min_connections, 100),
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(balance_min_connections, 100, false),
     %% Restart the server to pick up new config
     restart_balance_srv(),
     %% Wait for at least one check cycle
@@ -88,14 +101,213 @@ balance_srv_enabled_accepts_below_threshold_test(_Config) ->
     ?assert(vmq_balance_srv:is_accepting()).
 
 balance_srv_stats_returns_tuple_test(_Config) ->
-    {IsAccepting, LocalConns, ClusterAvg, IsEnabled} = vmq_balance_srv:balance_stats(),
+    {IsAccepting, LocalConns, ClusterAvg, IsEnabled, Rejections} = vmq_balance_srv:balance_stats(),
     ?assert(is_integer(IsAccepting)),
     ?assert(IsAccepting =:= 0 orelse IsAccepting =:= 1),
     ?assert(is_integer(LocalConns)),
     ?assert(LocalConns >= 0),
     ?assert(is_integer(ClusterAvg)),
     ?assert(is_integer(IsEnabled)),
-    ?assert(IsEnabled =:= 0 orelse IsEnabled =:= 1).
+    ?assert(IsEnabled =:= 0 orelse IsEnabled =:= 1),
+    ?assert(is_integer(Rejections)),
+    ?assert(Rejections >= 0).
+
+%% ===================================================================
+%% 5-tuple stats test
+%% ===================================================================
+
+balance_stats_5tuple_test(_Config) ->
+    %% Verify balance_stats returns a 5-tuple with correct types
+    Result = vmq_balance_srv:balance_stats(),
+    ?assertMatch({_, _, _, _, _}, Result),
+    {IsAccepting, LocalConns, ClusterAvg, IsEnabled, Rejections} = Result,
+    ?assert(is_integer(IsAccepting)),
+    ?assert(is_integer(LocalConns)),
+    ?assert(is_integer(ClusterAvg)),
+    ?assert(is_integer(IsEnabled)),
+    ?assert(is_integer(Rejections)),
+    %% Disabled by default: accepting=1, enabled=0, rejections=0
+    ?assertEqual(1, IsAccepting),
+    ?assertEqual(0, IsEnabled),
+    ?assertEqual(0, Rejections).
+
+%% ===================================================================
+%% Hook tests
+%% ===================================================================
+
+hook_registered_test(_Config) ->
+    %% Hooks are only registered when both balance_enabled and balance_reject_enabled are true
+    %% Use vmq_config:set_env to properly update the ETS config cache
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(balance_reject_enabled, true, false),
+    restart_balance_srv(),
+    Hooks = vmq_plugin:info(all),
+    AuthRegHooks = [H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks],
+    AuthRegM5Hooks = [H || {auth_on_register_m5, vmq_balance_hook, _, _} = H <- Hooks],
+    ?assert(length(AuthRegHooks) > 0),
+    ?assert(length(AuthRegM5Hooks) > 0).
+
+hook_not_registered_when_reject_disabled_test(_Config) ->
+    %% With balance_enabled=true but balance_reject_enabled=false, hooks should NOT be registered
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(balance_reject_enabled, false, false),
+    restart_balance_srv(),
+    Hooks = vmq_plugin:info(all),
+    AuthRegHooks = [H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks],
+    AuthRegM5Hooks = [H || {auth_on_register_m5, vmq_balance_hook, _, _} = H <- Hooks],
+    ?assertEqual(0, length(AuthRegHooks)),
+    ?assertEqual(0, length(AuthRegM5Hooks)).
+
+hook_dynamic_registration_test(_Config) ->
+    %% Start with reject off — no hooks
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(balance_reject_enabled, false, false),
+    restart_balance_srv(),
+    Hooks1 = vmq_plugin:info(all),
+    ?assertEqual(0, length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks1])),
+    %% Turn reject on and restart — hooks should appear
+    vmq_config:set_env(balance_reject_enabled, true, false),
+    restart_balance_srv(),
+    Hooks2 = vmq_plugin:info(all),
+    ?assert(length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks2]) > 0),
+    ?assert(length([H || {auth_on_register_m5, vmq_balance_hook, _, _} = H <- Hooks2]) > 0),
+    %% Turn reject off again and restart — hooks should be gone
+    vmq_config:set_env(balance_reject_enabled, false, false),
+    restart_balance_srv(),
+    Hooks3 = vmq_plugin:info(all),
+    ?assertEqual(0, length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks3])),
+    ?assertEqual(0, length([H || {auth_on_register_m5, vmq_balance_hook, _, _} = H <- Hooks3])).
+
+hook_dynamic_toggle_via_timer_test(_Config) ->
+    %% Verify hooks are toggled dynamically by the check_balance timer
+    %% without requiring a restart of vmq_balance_srv.
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(balance_reject_enabled, false, false),
+    vmq_config:set_env(balance_check_interval, 200, false),
+    restart_balance_srv(),
+    %% No hooks initially
+    Hooks1 = vmq_plugin:info(all),
+    ?assertEqual(0, length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks1])),
+    %% Enable reject via config — next check_balance tick should register hooks
+    vmq_config:set_env(balance_reject_enabled, true, false),
+    timer:sleep(500),
+    Hooks2 = vmq_plugin:info(all),
+    ?assert(length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks2]) > 0),
+    ?assert(length([H || {auth_on_register_m5, vmq_balance_hook, _, _} = H <- Hooks2]) > 0),
+    %% Disable reject via config — next tick should deregister hooks
+    vmq_config:set_env(balance_reject_enabled, false, false),
+    timer:sleep(500),
+    Hooks3 = vmq_plugin:info(all),
+    ?assertEqual(0, length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks3])),
+    ?assertEqual(0, length([H || {auth_on_register_m5, vmq_balance_hook, _, _} = H <- Hooks3])).
+
+hook_terminate_deregisters_test(_Config) ->
+    %% Verify that terminating vmq_balance_srv deregisters hooks
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(balance_reject_enabled, true, false),
+    restart_balance_srv(),
+    Hooks1 = vmq_plugin:info(all),
+    ?assert(length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks1]) > 0),
+    %% Terminate (not restart) — hooks should be cleaned up
+    supervisor:terminate_child(vmq_server_sup, vmq_balance_srv),
+    Hooks2 = vmq_plugin:info(all),
+    ?assertEqual(0, length([H || {auth_on_register, vmq_balance_hook, _, _} = H <- Hooks2])),
+    ?assertEqual(0, length([H || {auth_on_register_m5, vmq_balance_hook, _, _} = H <- Hooks2])),
+    %% Restart for subsequent tests
+    supervisor:restart_child(vmq_server_sup, vmq_balance_srv).
+
+hook_accepts_when_disabled_test(_Config) ->
+    %% When balance is disabled (default), hook should return next
+    SubscriberId = {"", <<"hook-test-client">>},
+    ?assertEqual(
+        next,
+        vmq_balance_hook:auth_on_register(
+            {{127, 0, 0, 1}, 12345}, SubscriberId, <<"user">>, <<"pass">>, true
+        )
+    ),
+    ?assertEqual(
+        next,
+        vmq_balance_hook:auth_on_register_m5(
+            {{127, 0, 0, 1}, 12345}, SubscriberId, <<"user">>, <<"pass">>, true, #{}
+        )
+    ).
+
+hook_accepts_when_below_threshold_test(_Config) ->
+    %% Enable balance, single node with 0 connections → still accepting
+    vmq_config:set_env(balance_enabled, true, false),
+    restart_balance_srv(),
+    timer:sleep(200),
+    SubscriberId = {"", <<"hook-threshold-client">>},
+    ?assertEqual(
+        next,
+        vmq_balance_hook:auth_on_register(
+            {{127, 0, 0, 1}, 12345}, SubscriberId, <<"user">>, <<"pass">>, true
+        )
+    ).
+
+hook_rejects_when_overloaded_test(_Config) ->
+    %% Force the balance_srv into rejecting state by manipulating its state
+    %% We use sys:replace_state to force accepting=false, enabled=true
+    %% Record field positions: #state.accepting = 5, #state.enabled = 6
+    sys:replace_state(vmq_balance_srv, fun(State) ->
+        setelement(5, setelement(6, State, true), false)
+    end),
+    SubscriberId = {"", <<"hook-reject-client">>},
+    %% v3.1.1 should get not_authorized
+    ?assertEqual(
+        {error, not_authorized},
+        vmq_balance_hook:auth_on_register(
+            {{127, 0, 0, 1}, 12345}, SubscriberId, <<"user">>, <<"pass">>, true
+        )
+    ),
+    %% v5 should get server_busy
+    ?assertEqual(
+        {error, #{reason_code => server_busy}},
+        vmq_balance_hook:auth_on_register_m5(
+            {{127, 0, 0, 1}, 12345}, SubscriberId, <<"user">>, <<"pass">>, true, #{}
+        )
+    ).
+
+hook_allows_session_takeover_test(_Config) ->
+    %% Start an MQTT listener and connect a client to create a session
+    vmq_server_cmd:listener_start(1889, []),
+    ClientId = <<"hook-takeover-client">>,
+    Connect = packet:gen_connect(ClientId, [{keepalive, 60}]),
+    Connack = packet:gen_connack(0),
+    {ok, Socket} = packet:do_client_connect(Connect, Connack, [{port, 1889}]),
+    %% Force rejecting state
+    %% Record field positions: #state.accepting = 5, #state.enabled = 6
+    sys:replace_state(vmq_balance_srv, fun(State) ->
+        setelement(5, setelement(6, State, true), false)
+    end),
+    %% The existing session should allow reconnect (returns next)
+    SubscriberId = {"", ClientId},
+    ?assertEqual(
+        next,
+        vmq_balance_hook:auth_on_register(
+            {{127, 0, 0, 1}, 12345}, SubscriberId, <<"user">>, <<"pass">>, true
+        )
+    ),
+    gen_tcp:close(Socket),
+    vmq_server_cmd:listener_stop(1889, "127.0.0.1", false).
+
+hook_rejection_counter_test(_Config) ->
+    %% Force rejecting state
+    %% Record field positions: #state.accepting = 5, #state.enabled = 6
+    sys:replace_state(vmq_balance_srv, fun(State) ->
+        setelement(5, setelement(6, State, true), false)
+    end),
+    %% Get initial rejection count
+    {_, _, _, _, InitialCount} = vmq_balance_srv:balance_stats(),
+    %% Trigger a rejection
+    SubscriberId = {"", <<"hook-counter-client">>},
+    vmq_balance_hook:auth_on_register(
+        {{127, 0, 0, 1}, 12345}, SubscriberId, <<"user">>, <<"pass">>, true
+    ),
+    %% Allow the async cast to be processed
+    timer:sleep(50),
+    {_, _, _, _, NewCount} = vmq_balance_srv:balance_stats(),
+    ?assertEqual(InitialCount + 1, NewCount).
 
 %% ===================================================================
 %% HTTP endpoint tests
@@ -111,7 +323,7 @@ balance_http_returns_200_when_disabled_test(_Config) ->
 
 balance_http_returns_200_when_accepting_test(_Config) ->
     %% Enable balance, but single node should still accept
-    application:set_env(vmq_server, balance_enabled, true),
+    vmq_config:set_env(balance_enabled, true, false),
     restart_balance_srv(),
     timer:sleep(200),
     Port = start_http_listener(),
@@ -157,7 +369,7 @@ balance_metrics_exposed_in_prometheus_test(_Config) ->
 
 balance_metrics_default_values_test(_Config) ->
     %% When disabled, balance_is_accepting should be 1, balance_is_enabled should be 0
-    {IsAccepting, _LocalConns, _ClusterAvg, IsEnabled} = vmq_balance_srv:balance_stats(),
+    {IsAccepting, _LocalConns, _ClusterAvg, IsEnabled, _Rejections} = vmq_balance_srv:balance_stats(),
     ?assertEqual(1, IsAccepting),
     ?assertEqual(0, IsEnabled).
 
@@ -175,9 +387,9 @@ balance_single_node_always_accepts_test(_Config) ->
 
 balance_enabled_single_node_always_accepts_test(_Config) ->
     %% Enable balance, set a very low threshold
-    application:set_env(vmq_server, balance_enabled, true),
-    application:set_env(vmq_server, balance_threshold, "1.0"),
-    application:set_env(vmq_server, balance_min_connections, 0),
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(balance_threshold, "1.0", false),
+    vmq_config:set_env(balance_min_connections, 0, false),
     restart_balance_srv(),
     timer:sleep(200),
     %% Even with balance enabled and threshold=1.0, single node should accept
@@ -209,17 +421,21 @@ balance_enabled_single_node_always_accepts_test(_Config) ->
 
 start_http_listener() ->
     Port = vmq_test_utils:get_free_port(),
-    vmq_server_cmd:listener_start(Port, [{http, true},
-                                         {config_mod, vmq_balance_http},
-                                         {config_fun, routes}]),
+    vmq_server_cmd:listener_start(Port, [
+        {http, true},
+        {config_mod, vmq_balance_http},
+        {config_fun, routes}
+    ]),
     Port.
 
 start_metrics_listener() ->
     Port = vmq_test_utils:get_free_port(),
     application:set_env(vmq_server, http_modules_auth, #{vmq_metrics_http => "noauth"}),
-    vmq_server_cmd:listener_start(Port, [{http, true},
-                                         {config_mod, vmq_metrics_http},
-                                         {config_fun, routes}]),
+    vmq_server_cmd:listener_start(Port, [
+        {http, true},
+        {config_mod, vmq_metrics_http},
+        {config_fun, routes}
+    ]),
     Port.
 
 stop_http_listener(Port) ->
@@ -227,7 +443,8 @@ stop_http_listener(Port) ->
 
 restart_balance_srv() ->
     case erlang:whereis(vmq_balance_srv) of
-        undefined -> ok;
+        undefined ->
+            ok;
         Pid ->
             supervisor:terminate_child(vmq_server_sup, vmq_balance_srv),
             supervisor:restart_child(vmq_server_sup, vmq_balance_srv),
@@ -251,9 +468,12 @@ wait_for_balance_srv(OldPid, Retries) ->
 
 has_metric_line(Lines, MetricName, Node) ->
     Prefix = list_to_binary(MetricName ++ "{node=\"" ++ Node ++ "\""),
-    lists:any(fun(Line) ->
-        case binary:match(Line, Prefix) of
-            {0, _} -> true;
-            _ -> false
-        end
-    end, Lines).
+    lists:any(
+        fun(Line) ->
+            case binary:match(Line, Prefix) of
+                {0, _} -> true;
+                _ -> false
+            end
+        end,
+        Lines
+    ).

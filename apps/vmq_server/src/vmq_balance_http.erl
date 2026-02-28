@@ -23,7 +23,7 @@ routes() ->
     [{"/api/balance-health", ?MODULE, []}].
 
 init(Req, Opts) ->
-    {IsAccepting, LocalConnections, ClusterAvg, _IsEnabled} =
+    {IsAccepting, LocalConnections, ClusterAvg, _IsEnabled, Rejections} =
         vmq_balance_srv:balance_stats(),
     {Code, Status} =
         case IsAccepting of
@@ -33,7 +33,8 @@ init(Req, Opts) ->
     Payload = [
         {<<"status">>, Status},
         {<<"connections">>, LocalConnections},
-        {<<"cluster_avg">>, ClusterAvg}
+        {<<"cluster_avg">>, ClusterAvg},
+        {<<"rejections">>, Rejections}
     ],
     Headers = #{<<"content-type">> => <<"application/json">>},
     cowboy_req:reply(Code, Headers, vmq_json:encode(Payload), Req),

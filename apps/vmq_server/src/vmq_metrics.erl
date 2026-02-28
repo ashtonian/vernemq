@@ -1642,8 +1642,8 @@ misc_statistics() ->
     ),
     {NetsplitDetectedCount, NetsplitResolvedCount} =
         fetch_external_metric(vmq_cluster, netsplit_statistics, {0, 0}),
-    {BalanceAccepting, BalanceLocalConns, BalanceClusterAvg, BalanceEnabled} =
-        fetch_external_metric(vmq_balance_srv, balance_stats, {1, 0, 0, 0}),
+    {BalanceAccepting, BalanceLocalConns, BalanceClusterAvg, BalanceEnabled, BalanceRejections} =
+        fetch_external_metric(vmq_balance_srv, balance_stats, {1, 0, 0, 0, 0}),
     [
         {netsplit_detected, NetsplitDetectedCount},
         {netsplit_resolved, NetsplitResolvedCount},
@@ -1658,7 +1658,8 @@ misc_statistics() ->
         {balance_is_accepting, BalanceAccepting},
         {balance_local_connections, BalanceLocalConns},
         {balance_cluster_avg, BalanceClusterAvg},
-        {balance_is_enabled, BalanceEnabled}
+        {balance_is_enabled, BalanceEnabled},
+        {balance_rejections, BalanceRejections}
     ].
 
 -spec misc_stats_def() -> [metric_def()].
@@ -1755,6 +1756,13 @@ misc_stats_def() ->
             balance_is_enabled,
             balance_is_enabled,
             <<"1 if cluster auto-balancing is enabled, 0 if disabled.">>
+        ),
+        m(
+            gauge,
+            [],
+            balance_rejections,
+            balance_rejections,
+            <<"Total connections rejected by cluster auto-balance.">>
         )
     ].
 

@@ -2341,6 +2341,18 @@
     {datatype, flag}
 ]}.
 
+%% @doc Enable active MQTT connection rejection on overloaded nodes.
+%% Requires balance_enabled = on. When on, overloaded nodes reject new
+%% MQTT connections with CONNACK error (0x05 for v3.1.1, server_busy for v5).
+%% Existing sessions are still allowed to reconnect.
+%% When off, the balance system only monitors and exposes the HTTP health
+%% endpoint without actively rejecting connections.
+%% Default is off.
+{mapping, "balance_reject_enabled", "vmq_server.balance_reject_enabled", [
+    {default, off},
+    {datatype, flag}
+]}.
+
 %% @doc Threshold above cluster average before rejecting new connections.
 %% A value of 1.2 means a node will stop accepting when it has 20% more
 %% connections than the cluster average. Specified as a string to support

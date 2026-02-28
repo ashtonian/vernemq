@@ -128,6 +128,7 @@
 
         % Cluster Auto-Balance
         {balance_enabled, false},
+        {balance_reject_enabled, false},
         {balance_threshold, "1.2"},
         {balance_hysteresis, "0.1"},
         {balance_min_connections, 100},
