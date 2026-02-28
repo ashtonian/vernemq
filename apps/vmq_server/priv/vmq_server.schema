@@ -314,6 +314,17 @@
                                                                                             hidden
                                                                                            ]}.
 
+%% @doc controls the eviction direction when the outgoing cluster buffer
+%% is full and the remote node is unreachable. Both modes are QoS-aware:
+%% QoS 0 messages are evicted before QoS 1/2.
+%%   lifo - evict newest buffered messages first (tail-drop)
+%%   fifo - evict oldest buffered messages first (head-drop)
+{mapping, "outgoing_clustering_buffer_drop_policy", "vmq_server.outgoing_clustering_buffer_drop_policy", [
+                                                                                                          {default, lifo},
+                                                                                                          {datatype, {enum, [lifo, fifo]}},
+                                                                                                          hidden
+                                                                                                         ]}.
+
 %% @doc specifies the timeout for enqueuing something in a queue on a remote node.
 {mapping, "remote_enqueue_timeout", "vmq_server.remote_enqueue_timeout", [
                                                                           {default, 5000},

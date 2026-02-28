@@ -7,6 +7,7 @@
 - Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
 - Enhancement: Don't log msg payload in pubauth errors.
 - Bugfix: active connections count for WS in metrics and listener info.
+- Enhancement: vmq_cluster_node: Add configurable buffer drop policy (outgoing_clustering_buffer_drop_policy) with QoS-aware eviction. Both modes evict QoS 0 messages before QoS 1/2. 'lifo' (default) evicts newest buffered messages first; 'fifo' evicts oldest first.
 
 
 ## VerneMQ 2.1.1
