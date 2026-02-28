@@ -19,7 +19,7 @@
 
 %% API
 -export([
-    start_link/1,
+    start_link/2,
     publish/2,
     enqueue/4,
     enqueue_async/3,
@@ -40,6 +40,7 @@
 -record(state, {
     parent,
     node,
+    pool_idx,
     socket,
     transport,
     reachable = false,
@@ -57,8 +58,8 @@
 %%% API
 %%%===================================================================
 
-start_link(RemoteNode) ->
-    proc_lib:start_link(?MODULE, init, [[self(), RemoteNode]]).
+start_link(RemoteNode, PoolIdx) ->
+    proc_lib:start_link(?MODULE, init, [[self(), RemoteNode, PoolIdx]]).
 
 publish(Pid, Msg) ->
     Ref = make_ref(),
@@ -116,15 +117,21 @@ status(Pid) ->
             {error, Reason}
     end.
 
-init([Parent, RemoteNode]) ->
+init([Parent, RemoteNode, PoolIdx]) ->
     MaxQueueSize = vmq_config:get_env(outgoing_clustering_buffer_size),
     proc_lib:init_ack(Parent, {ok, self()}),
+    ets:insert(vmq_cluster_node_pool, {{RemoteNode, PoolIdx}, self()}),
     % Delay the initial connect attempt, this is useful when automating
     % cluster node setup, where multiple nodes are concurrently setup.
     % Without a delay a node may try to connect to a cluster node that
     % hasn't finished setting up the vmq cluster listener.
     erlang:send_after(1000, self(), reconnect),
-    loop(#state{parent = Parent, node = RemoteNode, max_queue_size = MaxQueueSize}).
+    loop(#state{
+        parent = Parent,
+        node = RemoteNode,
+        pool_idx = PoolIdx,
+        max_queue_size = MaxQueueSize
+    }).
 
 loop(#state{pending = Pending, reachable = Reachable} = State) when
     Pending == [];
@@ -210,14 +217,14 @@ handle_message({msg, CallerPid, Ref, Msg}, State) ->
     NewState;
 handle_message(
     {connect_async_done, AsyncPid, {ok, {Transport, Socket}}},
-    #state{async_connect_pid = AsyncPid, node = RemoteNode} = State
+    #state{async_connect_pid = AsyncPid, node = RemoteNode, pool_idx = PoolIdx} = State
 ) ->
     NodeName = term_to_binary(node()),
     L = byte_size(NodeName),
     Msg = [<<"vmq-connect">>, <<L:32, NodeName/binary>>],
     case send(Transport, Socket, Msg) of
         ok ->
-            ?LOG_INFO("successfully connected to cluster node ~p", [RemoteNode]),
+            ?LOG_INFO("successfully connected to cluster node ~p (pool ~p)", [RemoteNode, PoolIdx]),
             State#state{
                 socket = Socket,
                 transport = Transport,
@@ -226,8 +233,8 @@ handle_message(
                 reachable = true
             };
         {error, Reason} ->
-            ?LOG_WARNING("can't initiate connect to cluster node ~p due to ~p", [
-                RemoteNode, Reason
+            ?LOG_WARNING("can't initiate connect to cluster node ~p (pool ~p) due to ~p", [
+                RemoteNode, PoolIdx, Reason
             ]),
             close_reconnect(State)
     end;
@@ -250,24 +257,24 @@ handle_message({status, CallerPid, Ref}, #state{socket = Socket, reachable = Rea
     State;
 handle_message({system, From, Request}, #state{parent = Parent} = State) ->
     sys:handle_system_msg(Request, From, Parent, ?MODULE, [], State);
-handle_message({NetEvClosed, Socket}, #state{node = RemoteNode, socket = Socket} = State) when
+handle_message({NetEvClosed, Socket}, #state{node = RemoteNode, pool_idx = PoolIdx, socket = Socket} = State) when
     NetEvClosed == tcp_closed;
     NetEvClosed == ssl_closed
 ->
     ?LOG_WARNING(
-        "connection to node ~p has been closed, reconnect in ~pms",
-        [RemoteNode, ?RECONNECT]
+        "connection to node ~p (pool ~p) has been closed, reconnect in ~pms",
+        [RemoteNode, PoolIdx, ?RECONNECT]
     ),
     close_reconnect(State);
 handle_message(
-    {NetEvError, Socket, Reason}, #state{node = RemoteNode, socket = Socket} = State
+    {NetEvError, Socket, Reason}, #state{node = RemoteNode, pool_idx = PoolIdx, socket = Socket} = State
 ) when
     NetEvError == tcp_error;
     NetEvError == ssl_error
 ->
     ?LOG_WARNING(
-        "connection to node ~p has been closed due to error ~p, reconnect in ~pms",
-        [RemoteNode, Reason, ?RECONNECT]
+        "connection to node ~p (pool ~p) has been closed due to error ~p, reconnect in ~pms",
+        [RemoteNode, PoolIdx, Reason, ?RECONNECT]
     ),
     close_reconnect(State);
 handle_message(Msg, #state{node = Node, reachable = Reachable} = State) ->
@@ -448,7 +455,17 @@ controlling_process(gen_tcp, Socket, Pid) ->
 controlling_process(ssl, {'ssl', Socket}, Pid) ->
     ssl:controlling_process(Socket, Pid).
 
-teardown(#state{socket = Socket, transport = Transport, async_connect_pid = AsyncPid}, Reason) ->
+teardown(
+    #state{
+        node = Node,
+        pool_idx = PoolIdx,
+        socket = Socket,
+        transport = Transport,
+        async_connect_pid = AsyncPid
+    },
+    Reason
+) ->
+    ets:delete(vmq_cluster_node_pool, {Node, PoolIdx}),
     case AsyncPid of
         undefined -> ignore;
         Pid -> exit(Pid, normal)

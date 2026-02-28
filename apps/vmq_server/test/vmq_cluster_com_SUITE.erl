@@ -126,8 +126,20 @@ setup_mock_vmq_cluster_node(Config, Opts) ->
     ok = rpc:block_call(Node, vmq_config, set_env, [outgoing_connect_params_module, ?MODULE, false]),
     ok = rpc:block_call(Node, vmq_config, set_env, [outgoing_connect_timeout, 1000, false]),
     ok = rpc:block_call(Node, vmq_config, set_env, [outgoing_clustering_buffer_size, 1000, false]),
-    {ok, ClusterNodePid} = rpc:block_call(Node, vmq_cluster_node, start_link, [node()]),
+    %% Ensure pool ETS table exists (test bypasses supervisor init)
+    rpc:block_call(Node, ?MODULE, ensure_pool_table, []),
+    {ok, ClusterNodePid} = rpc:block_call(Node, vmq_cluster_node, start_link, [node(), 0]),
     ClusterNodePid.
+
+ensure_pool_table() ->
+    case ets:info(vmq_cluster_node_pool) of
+        undefined ->
+            ets:new(vmq_cluster_node_pool,
+                    [public, set, named_table, {read_concurrency, true}]),
+            ets:insert(vmq_cluster_node_pool, {pool_size, 1});
+        _ ->
+            ok
+    end.
 
 terminate_mock_vmq_cluster_node(Config) ->
     Node = proplists:get_value(node, Config),

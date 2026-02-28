@@ -7,6 +7,7 @@
 - Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
 - Enhancement: Don't log msg payload in pubauth errors.
 - Bugfix: active connections count for WS in metrics and listener info.
+- Enhancement: Add configurable connection pool for inter-node cluster communication (outgoing_clustering_connection_count), reducing single-process serialization bottleneck for high-throughput clusters.
 
 
 ## VerneMQ 2.1.1
