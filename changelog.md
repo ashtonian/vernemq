@@ -1596,3 +1596,15 @@ imcompatibilites:
 - Minor bug fixed related to dynamically loading plugins
 
 - Switch to rebar3 (this includes plugins following the rebar3 structure)
+
+## VerneMQ (Unreleased)
+
+- Cluster tiered readiness: Introduce a configurable `cluster_ready_quorum` threshold that replaces the binary ready/not-ready model with three tiers — healthy, degraded, and partitioned. When the fraction of reachable nodes meets the quorum (default 1.0 for backwards compatibility), the cluster enters "degraded" mode instead of marking itself down, allowing operations to continue with partial reachability.
+- New health endpoint `/health/cluster`: Returns detailed cluster status including tier, total/alive node counts, and unreachable node list.
+- Health endpoint enhancements: `/health` now includes `cluster_state` in responses and returns HTTP 200 with warnings (instead of 503) when the cluster is degraded but not fully partitioned.
+- New metrics: `cluster_degraded_detected`, `cluster_degraded_resolved` counters and `cluster_readiness` gauge (2=healthy, 1=degraded, 0=partitioned).
+- vmq_cluster_mon: Faster recheck interval (5s) when cluster is in degraded state.
+- Status page: `/status` endpoint now includes `cluster_tier` in its JSON response.
+- Configuration: `cluster_ready_quorum` is runtime-configurable via `vmq-admin`.
+- vmq_cluster: Internal ETS status format migrated from 3-tuple to 5-tuple with backwards-compatible migration.
+- Tests: Added `vmq_cluster_tier_SUITE` unit tests for tier computation and format migration, tiered readiness integration tests in netsplit suite (including recovery lifecycle, pub/sub during degraded, and HTTP endpoint responses during degraded/partitioned states), and HTTP endpoint tests for `/health/cluster` and `cluster_state` field.

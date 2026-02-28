@@ -33,6 +33,7 @@
 
 -record(state, {}).
 -define(RECHECK_INTERVAL, 10000).
+-define(RECHECK_INTERVAL_DEGRADED, 5000).
 -define(RECHECK_INTERVAL_NOT_READY, 2000).
 
 %%%===================================================================
@@ -136,14 +137,13 @@ handle_info({gen_event_EXIT, vmq_cluster, _}, State) ->
     {noreply, State};
 handle_info(recheck, State) ->
     vmq_cluster:recheck(),
-    erlang:send_after(
-        case vmq_cluster:is_ready() of
-            true -> ?RECHECK_INTERVAL;
-            false -> ?RECHECK_INTERVAL_NOT_READY
+    Interval =
+        case vmq_cluster:cluster_tier() of
+            healthy -> ?RECHECK_INTERVAL;
+            degraded -> ?RECHECK_INTERVAL_DEGRADED;
+            _ -> ?RECHECK_INTERVAL_NOT_READY
         end,
-        self(),
-        recheck
-    ),
+    erlang:send_after(Interval, self(), recheck),
     {noreply, State}.
 
 %%--------------------------------------------------------------------

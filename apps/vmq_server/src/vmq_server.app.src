@@ -125,6 +125,9 @@
         %{graphite_api_key, ""},
         %{graphite_prefix, ""}
 
+        % Cluster readiness quorum (1.0 = all nodes must be alive)
+        {cluster_ready_quorum, 1.0},
+
         % Systree
         {systree_enabled, true}
         %{systree_interval, 20000},

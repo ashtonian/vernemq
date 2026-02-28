@@ -37,12 +37,25 @@
     is_ready/0,
     if_ready/2,
     if_ready/3,
+    cluster_tier/0,
     netsplit_statistics/0,
+    degraded_statistics/0,
     publish/2,
     remote_enqueue/3,
     remote_enqueue/4,
     remote_enqueue_async/3
 ]).
+
+-type cluster_tier() :: healthy | degraded | partitioned.
+-export_type([cluster_tier/0]).
+
+-ifdef(TEST).
+-export([
+    compute_tier/2,
+    compute_transition/2,
+    migrate_old_format/1
+]).
+-endif.
 
 -define(SERVER, ?MODULE).
 %% table is owned by vmq_cluster_mon
@@ -83,17 +96,54 @@ status() ->
 
 -spec is_ready() -> boolean().
 is_ready() ->
-    [{ready, {Ready, _, _}}] = ets:lookup(?VMQ_CLUSTER_STATUS, ready),
-    Ready.
+    case cluster_tier() of
+        partitioned -> false;
+        _ -> true
+    end.
 
--spec netsplit_statistics() -> {non_neg_integer(), non_neg_integer()}.
+-spec cluster_tier() -> cluster_tier().
+cluster_tier() ->
+    case catch ets:lookup(?VMQ_CLUSTER_STATUS, ready) of
+        [{ready, {Tier, _, _, _, _}}] when
+            Tier =:= healthy; Tier =:= degraded; Tier =:= partitioned
+        ->
+            Tier;
+        [{ready, {true, _, _}}] ->
+            healthy;
+        [{ready, {false, _, _}}] ->
+            partitioned;
+        _ ->
+            partitioned
+    end.
+
+-spec netsplit_statistics() -> {non_neg_integer(), non_neg_integer()} | {error, atom()}.
 netsplit_statistics() ->
     case catch ets:lookup(?VMQ_CLUSTER_STATUS, ready) of
+        [{ready, {Tier, NetsplitDetectedCount, NetsplitResolvedCount, _, _}}] when
+            Tier =:= healthy; Tier =:= degraded; Tier =:= partitioned
+        ->
+            {NetsplitDetectedCount, NetsplitResolvedCount};
         [{ready, {_Ready, NetsplitDetectedCount, NetsplitResolvedCount}}] ->
             {NetsplitDetectedCount, NetsplitResolvedCount};
-        % we don't have a vmq_status ETS table
         {'EXIT', {badarg, _}} ->
-            {error, vmq_status_table_down}
+            {error, vmq_status_table_down};
+        _ ->
+            {0, 0}
+    end.
+
+-spec degraded_statistics() -> {non_neg_integer(), non_neg_integer()} | {error, atom()}.
+degraded_statistics() ->
+    case catch ets:lookup(?VMQ_CLUSTER_STATUS, ready) of
+        [{ready, {Tier, _, _, DegradedDetectedCount, DegradedResolvedCount}}] when
+            Tier =:= healthy; Tier =:= degraded; Tier =:= partitioned
+        ->
+            {DegradedDetectedCount, DegradedResolvedCount};
+        [{ready, {_Ready, _, _}}] ->
+            {0, 0};
+        {'EXIT', {badarg, _}} ->
+            {error, vmq_status_table_down};
+        _ ->
+            {0, 0}
     end.
 
 -spec if_ready(_, _) -> any().
@@ -230,29 +280,84 @@ check_ready([Node | Rest], Acc) ->
     IsReady1 = IsReady andalso lists:member(Status, [up, init]),
     check_ready(Rest, [{Node, IsReady1} | Acc]);
 check_ready([], Acc) ->
-    OldObj =
+    OldObj = migrate_old_format(
         case ets:lookup(?VMQ_CLUSTER_STATUS, ready) of
-            [] -> {true, 0, 0};
+            [] -> {healthy, 0, 0, 0, 0};
             [{ready, Obj}] -> Obj
-        end,
-    NewObj =
-        case {all_nodes_alive(Acc), OldObj} of
-            {true, {true, NetsplitDetectedCnt, NetsplitResolvedCnt}} ->
-                % Cluster was consistent, is still consistent
-                {true, NetsplitDetectedCnt, NetsplitResolvedCnt};
-            {true, {false, NetsplitDetectedCnt, NetsplitResolvedCnt}} ->
-                % Cluster was inconsistent, netsplit resolved
-                {true, NetsplitDetectedCnt, NetsplitResolvedCnt + 1};
-            {false, {true, NetsplitDetectedCnt, NetsplitResolvedCnt}} ->
-                % Cluster was consistent, but isn't anymore
-                {false, NetsplitDetectedCnt + 1, NetsplitResolvedCnt};
-            {false, {false, NetsplitDetectedCnt, NetsplitResolvedCnt}} ->
-                % Cluster was inconsistent, is still inconsistent
-                {false, NetsplitDetectedCnt, NetsplitResolvedCnt}
-        end,
+        end
+    ),
+    Quorum = vmq_config:get_env(cluster_ready_quorum, 1.0),
+    NewTier = compute_tier(Acc, Quorum),
+    NewObj = compute_transition(NewTier, OldObj),
     ets:insert(?VMQ_CLUSTER_STATUS, [{ready, NewObj} | Acc]).
 
--spec all_nodes_alive([{NodeName :: atom(), IsReady :: boolean()}]) -> boolean().
-all_nodes_alive([{_NodeName, _IsReady = false} | _]) -> false;
-all_nodes_alive([{_NodeName, _IsReady = true} | Rest]) -> all_nodes_alive(Rest);
-all_nodes_alive([]) -> true.
+%% @doc Migrate old 3-tuple ETS format to new 5-tuple.
+-spec migrate_old_format(tuple()) ->
+    {cluster_tier(), non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}.
+migrate_old_format({Tier, NsDetected, NsResolved, DegDetected, DegResolved}) when
+    Tier =:= healthy; Tier =:= degraded; Tier =:= partitioned
+->
+    {Tier, NsDetected, NsResolved, DegDetected, DegResolved};
+migrate_old_format({true, NsDetected, NsResolved}) ->
+    {healthy, NsDetected, NsResolved, 0, 0};
+migrate_old_format({false, NsDetected, NsResolved}) ->
+    {partitioned, NsDetected, NsResolved, 0, 0};
+migrate_old_format(_Unexpected) ->
+    ?LOG_WARNING("unexpected cluster status ETS format, resetting counters"),
+    {healthy, 0, 0, 0, 0}.
+
+%% @doc Compute cluster tier from node status list using quorum threshold.
+%% Uses integer arithmetic to avoid float comparison precision issues.
+-spec compute_tier([{atom(), boolean()}], float()) -> cluster_tier().
+compute_tier([], _Quorum) ->
+    healthy;
+compute_tier(Acc, Quorum) ->
+    Total = length(Acc),
+    Alive = length([N || {N, true} <- Acc]),
+    case Alive =:= Total of
+        true ->
+            healthy;
+        false ->
+            case Alive * 100 >= round(Quorum * 100) * Total of
+                true -> degraded;
+                false -> partitioned
+            end
+    end.
+
+%% @doc Track state transitions and update counters.
+-spec compute_transition(cluster_tier(), tuple()) ->
+    {cluster_tier(), non_neg_integer(), non_neg_integer(), non_neg_integer(), non_neg_integer()}.
+compute_transition(NewTier, {OldTier, NsDetected, NsResolved, DegDetected, DegResolved}) ->
+    {NsDetected1, NsResolved1} = update_netsplit_counters(OldTier, NewTier, NsDetected, NsResolved),
+    {DegDetected1, DegResolved1} = update_degraded_counters(
+        OldTier, NewTier, DegDetected, DegResolved
+    ),
+    log_transition(OldTier, NewTier),
+    {NewTier, NsDetected1, NsResolved1, DegDetected1, DegResolved1}.
+
+update_netsplit_counters(OldTier, partitioned, NsDetected, NsResolved) when
+    OldTier =/= partitioned
+->
+    {NsDetected + 1, NsResolved};
+update_netsplit_counters(partitioned, NewTier, NsDetected, NsResolved) when
+    NewTier =/= partitioned
+->
+    {NsDetected, NsResolved + 1};
+update_netsplit_counters(_, _, NsDetected, NsResolved) ->
+    {NsDetected, NsResolved}.
+
+update_degraded_counters(OldTier, degraded, DegDetected, DegResolved) when
+    OldTier =/= degraded
+->
+    {DegDetected + 1, DegResolved};
+update_degraded_counters(degraded, NewTier, DegDetected, DegResolved) when
+    NewTier =/= degraded
+->
+    {DegDetected, DegResolved + 1};
+update_degraded_counters(_, _, DegDetected, DegResolved) ->
+    {DegDetected, DegResolved}.
+
+log_transition(Same, Same) ->
+    ok;
+log_transition(OldTier, NewTier) ->
+    ?LOG_WARNING("cluster tier changed: ~p -> ~p", [OldTier, NewTier]).
