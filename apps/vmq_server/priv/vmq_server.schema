@@ -110,6 +110,24 @@
                                                                             hidden
                                                                            ]}.
 
+%% @doc Number of worker processes for the subscription trie.
+%% Higher values improve throughput during node joins, netsplit recovery,
+%% and high subscribe/unsubscribe rates.
+{mapping, "reg_trie_workers", "vmq_server.reg_trie_workers", [
+                                                                {default, 8},
+                                                                {datatype, integer},
+                                                                hidden
+                                                               ]}.
+
+%% @doc Number of shard processes for vmq_reg_sync.
+%% Higher values reduce contention during reconnection storms by
+%% distributing sync key processing across independent workers.
+{mapping, "reg_sync_shards", "vmq_server.reg_sync_shards", [
+                                                              {default, 8},
+                                                              {datatype, integer},
+                                                              hidden
+                                                             ]}.
+
 %% @doc Secret to be used for crendentials obfuscation. Default is "random" which 
 %% generates a random string. 
 {mapping, "logging.obfuscation_secret", "vmq_server.logging", [
@@ -332,7 +350,7 @@
 %% @doc specifies the modules to be enabled by the http(s) listeners. Overriding this setting is possible for specific listeners.
 {mapping, "http_modules", "vmq_server.http_modules", [
                                                       {default, "[vmq_metrics_http,vmq_http_mgmt_api, vmq_status_http, vmq_health_http,
-                                                                vmq_http_v2_api]"},
+                                                                vmq_http_v2_api, vmq_balance_http]"},
                                                       {datatype, string},
                                                       hidden
                                                      ]}.
