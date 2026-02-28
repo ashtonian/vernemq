@@ -7,6 +7,7 @@
 - Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
 - Enhancement: Don't log msg payload in pubauth errors.
 - Bugfix: active connections count for WS in metrics and listener info.
+- vmq_reg_trie: Shard subscription trie event processing across N worker processes (default 8, configurable via `reg_trie_workers`) to improve throughput during node joins, netsplit recovery, and high subscribe/unsubscribe rates. ETS mutations rewritten with atomic primitives for concurrent safety. Supervision tree uses dedicated ETS table owner process with `rest_for_one` strategy to prevent full trie reload on single worker crash. Readiness flag (`subscribe_trie_ready`) properly reset during coordinator restart to prevent silent message loss into an empty trie.
 
 
 ## VerneMQ 2.1.1

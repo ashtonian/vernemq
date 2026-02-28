@@ -16,6 +16,7 @@
 -module(vmq_reg_trie).
 
 -include("vmq_server.hrl").
+-include("vmq_reg_trie.hrl").
 -include_lib("kernel/include/logger.hrl").
 
 -dialyzer(no_undefined_callbacks).
@@ -44,24 +45,14 @@
 -record(state, {
     status = init,
     event_handler,
-    event_queue = queue:new()
+    event_queue = queue:new(),
+    num_workers
 }).
-
--record(trie, {edge, node_id}).
--record(trie_node, {node_id, edge_count = 0, topic}).
--record(trie_edge, {node_id, word}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @doc
-%% Starts the server
-%%
-%% @spec start_link() -> {ok, Pid} | ignore | {error, Error}
-%% @end
-%%--------------------------------------------------------------------
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
@@ -132,8 +123,8 @@ lookup_subs(Key) ->
         [{_, fanout}] ->
             MS = [{{{Key, '$1'}}, [], [{{{Key}, '$1'}}]}],
             ets:select(vmq_trie_subs_fanout, MS);
-        Res ->
-            Res
+        [] ->
+            []
     end.
 
 fold__(FoldFun, SubscriberId, Acc, [{_, SubsIdQoS} | Rest]) ->
@@ -164,105 +155,65 @@ info(T, What) ->
 %%% gen_server callbacks
 %%%===================================================================
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Initializes the server
-%%
-%% @spec init(Args) -> {ok, State} |
-%%                     {ok, State, Timeout} |
-%%                     ignore |
-%%                     {stop, Reason}
-%% @end
-%%--------------------------------------------------------------------
 init([]) ->
-    create_tables(),
+    NumWorkers = application:get_env(vmq_server, reg_trie_workers, 8),
+    persistent_term:put(subscribe_trie_ready, 0),
     Self = self(),
     spawn_link(
         fun() ->
-            ok = vmq_reg:fold_subscriptions(fun initialize_trie/2, ok),
+            %% Wait for all workers to be registered before dispatching
+            wait_for_workers(NumWorkers),
+            ok = vmq_reg:fold_subscriptions(
+                fun(Entry, Acc) ->
+                    initialize_trie_entry(Entry, NumWorkers),
+                    Acc
+                end,
+                ok
+            ),
             Self ! subscribers_loaded
         end
     ),
     EventHandler = vmq_reg:subscribe_subscriber_changes(),
-    {ok, #state{event_handler = EventHandler}}.
+    {ok, #state{event_handler = EventHandler, num_workers = NumWorkers}}.
 
-create_tables() ->
-    DefaultETSOpts = [
-        public,
-        named_table,
-        {read_concurrency, true}
-    ],
-    _ = ets:new(vmq_trie, [{keypos, 2} | DefaultETSOpts]),
-    _ = ets:new(vmq_trie_node, [{keypos, 2} | DefaultETSOpts]),
-    _ = ets:new(vmq_trie_topic, [{keypos, 1} | DefaultETSOpts]),
-    _ = ets:new(vmq_trie_subs, [bag | DefaultETSOpts]),
-    _ = ets:new(vmq_trie_subs_fanout, [ordered_set | DefaultETSOpts]),
-    _ = ets:new(vmq_trie_remote_subs, [{keypos, 1} | DefaultETSOpts]).
-
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling call messages
-%%
-%% @spec handle_call(Request, From, State) ->
-%%                                   {reply, Reply, State} |
-%%                                   {reply, Reply, State, Timeout} |
-%%                                   {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, Reply, State} |
-%%                                   {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
-handle_call({event, Event}, _From, #state{event_handler = Handler} = State) ->
+handle_call({event, Event}, _From, #state{event_handler = Handler, num_workers = N} = State) ->
     %% used only for testing/microbenchmarking
-    handle_event(Handler, Event),
+    handle_event(Handler, Event, N),
     {reply, ok, State};
-handle_call(init_subs, _From, State) ->
+handle_call(init_subs, _From, #state{num_workers = N} = State) ->
+    persistent_term:put(subscribe_trie_ready, 0),
+    Coordinator = self(),
     spawn_link(
         fun() ->
-            ok = vmq_reg:fold_subscriptions(fun initialize_trie/2, ok),
-            self() ! subscribers_loaded
+            ok = vmq_reg:fold_subscriptions(
+                fun(Entry, Acc) ->
+                    initialize_trie_entry(Entry, N),
+                    Acc
+                end,
+                ok
+            ),
+            Coordinator ! subscribers_loaded
         end
     ),
-    {reply, ok, State};
+    {reply, ok, State#state{status = init, event_queue = queue:new()}};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling cast messages
-%%
-%% @spec handle_cast(Msg, State) -> {noreply, State} |
-%%                                  {noreply, State, Timeout} |
-%%                                  {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Handling all non call/cast messages
-%%
-%% @spec handle_info(Info, State) -> {noreply, State} |
-%%                                   {noreply, State, Timeout} |
-%%                                   {stop, Reason, State}
-%% @end
-%%--------------------------------------------------------------------
 handle_info(
     subscribers_loaded,
     #state{
         event_handler = Handler,
-        event_queue = Q
+        event_queue = Q,
+        num_workers = N
     } = State
 ) ->
     lists:foreach(
         fun(Event) ->
-            handle_event(Handler, Event)
+            handle_event(Handler, Event, N)
         end,
         queue:to_list(Q)
     ),
@@ -275,76 +226,77 @@ handle_info(
     {noreply, State#state{status = ready, event_queue = undefined}};
 handle_info(Event, #state{status = init, event_queue = Q} = State) ->
     {noreply, State#state{event_queue = queue:in(Event, Q)}};
-handle_info(Event, #state{event_handler = Handler} = State) ->
-    handle_event(Handler, Event),
+handle_info(Event, #state{event_handler = Handler, num_workers = N} = State) ->
+    handle_event(Handler, Event, N),
     {noreply, State}.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% This function is called by a gen_server when it is about to
-%% terminate. It should be the opposite of Module:init/1 and do any
-%% necessary cleaning up. When it returns, the gen_server terminates
-%% with Reason. The return value is ignored.
-%%
-%% @spec terminate(Reason, State) -> void()
-%% @end
-%%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
     ok.
 
-%%--------------------------------------------------------------------
-%% @private
-%% @doc
-%% Convert process state when code is changed
-%%
-%% @spec code_change(OldVsn, State, Extra) -> {ok, NewState}
-%% @end
-%%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
 %%%===================================================================
-%%% Internal functions
+%%% Internal functions — event routing
 %%%===================================================================
-handle_event(Handler, Event) ->
+
+handle_event(Handler, Event, NumWorkers) ->
     case Handler(Event) of
         {delete, SubscriberId, Subscriptions} ->
             Removed = vmq_subscriber:get_changes(Subscriptions),
-            vmq_subscriber:fold(fun handle_delete_event/2, SubscriberId, Removed);
+            WorkerId = route_worker(SubscriberId, NumWorkers),
+            vmq_reg_trie_worker:worker_name(WorkerId) !
+                {trie_event, {delete, SubscriberId, Removed}};
         {update, SubscriberId, OldValue, NewValue} ->
             {ToRemove, ToAdd} = vmq_subscriber:get_changes(OldValue, NewValue),
-            vmq_subscriber:fold(fun handle_delete_event/2, SubscriberId, ToRemove),
-            vmq_subscriber:fold(fun handle_add_event/2, SubscriberId, ToAdd);
+            WorkerId = route_worker(SubscriberId, NumWorkers),
+            Worker = vmq_reg_trie_worker:worker_name(WorkerId),
+            case ToRemove of
+                [] -> ok;
+                _ -> Worker ! {trie_event, {delete, SubscriberId, ToRemove}}
+            end,
+            case ToAdd of
+                [] -> ok;
+                _ -> Worker ! {trie_event, {add, SubscriberId, ToAdd}}
+            end;
         ignore ->
             ok
     end.
 
-handle_add_event({[<<"$share">>, Group | Topic], SubInfo, Node}, {MP, _} = SubscriberId) ->
-    add_complex_topic(MP, Topic, {Node, Group}, true),
-    add_subscriber_group(MP, Node, Group, Topic, SubscriberId, SubInfo),
-    SubscriberId;
-handle_add_event({Topic, SubInfo, Node}, {MP, _} = SubscriberId) when Node == node() ->
-    add_complex_topic(MP, Topic, Node, vmq_topic:contains_wildcard(Topic)),
-    add_subscriber(MP, Topic, SubscriberId, SubInfo),
-    SubscriberId;
-handle_add_event({Topic, _, Node}, {MP, _} = SubscriberId) ->
-    add_complex_topic(MP, Topic, Node, vmq_topic:contains_wildcard(Topic)),
-    add_remote_subscriber(MP, Topic, Node),
-    SubscriberId.
+route_worker(SubscriberId, NumWorkers) ->
+    erlang:phash2(SubscriberId, NumWorkers).
 
-handle_delete_event({[<<"$share">>, Group | Topic], SubInfo, Node}, {MP, _} = SubscriberId) ->
-    del_complex_topic(MP, Topic, {Node, Group}, true),
-    del_subscriber_group(MP, Node, Group, Topic, SubscriberId, SubInfo),
-    SubscriberId;
-handle_delete_event({Topic, SubInfo, Node}, {MP, _} = SubscriberId) when Node == node() ->
-    del_complex_topic(MP, Topic, Node, vmq_topic:contains_wildcard(Topic)),
-    del_subscriber(MP, Topic, SubscriberId, SubInfo),
-    SubscriberId;
-handle_delete_event({Topic, _, Node}, {MP, _} = SubscriberId) ->
-    del_complex_topic(MP, Topic, Node, vmq_topic:contains_wildcard(Topic)),
-    del_remote_subscriber(MP, Topic, Node),
-    SubscriberId.
+initialize_trie_entry({_, _, {_, _, Node, CleanSession}}, _NumWorkers) when
+    Node =:= node(), CleanSession == true
+->
+    ok;
+initialize_trie_entry(
+    {_MP, _Topic, {SubscriberId, _SubInfo, _Node, _CleanSession}} = Entry, NumWorkers
+) ->
+    WorkerId = route_worker(SubscriberId, NumWorkers),
+    vmq_reg_trie_worker:init_entry(WorkerId, Entry);
+initialize_trie_entry(Entry, _NumWorkers) ->
+    ?LOG_WARNING("vmq_reg_trie: unexpected init entry: ~p", [Entry]),
+    ok.
+
+wait_for_workers(NumWorkers) ->
+    wait_for_workers(0, NumWorkers).
+
+wait_for_workers(Id, NumWorkers) when Id >= NumWorkers ->
+    ok;
+wait_for_workers(Id, NumWorkers) ->
+    Name = vmq_reg_trie_worker:worker_name(Id),
+    case whereis(Name) of
+        undefined ->
+            timer:sleep(1),
+            wait_for_workers(Id, NumWorkers);
+        _Pid ->
+            wait_for_workers(Id + 1, NumWorkers)
+    end.
+
+%%%===================================================================
+%%% Internal functions — read path (ETS reads, no mutations)
+%%%===================================================================
 
 match(MP, Topic) when is_list(MP) and is_list(Topic) ->
     TrieNodes = trie_match(MP, Topic),
@@ -372,69 +324,6 @@ match_(Topic, [{NodeOrGroup, _} | Rest], Acc) ->
     match_(Topic, Rest, [{Topic, NodeOrGroup} | Acc]);
 match_(_, [], Acc) ->
     Acc.
-
-initialize_trie(
-    {MP, [<<"$share">>, Group | Topic], {SubscriberId, SubInfo, Node, _CleanSession}}, Acc
-) ->
-    add_complex_topic(MP, Topic, {Node, Group}, true),
-    add_subscriber_group(MP, Node, Group, Topic, SubscriberId, SubInfo),
-    Acc;
-initialize_trie({_, _, {_, _, Node, CleanSession}}, Acc) when
-    Node =:= node(), CleanSession == true
-->
-    Acc;
-initialize_trie({MP, Topic, {SubscriberId, SubInfo, Node, _CleanSession}}, Acc) when
-    Node =:= node()
-->
-    add_complex_topic(MP, Topic, Node, vmq_topic:contains_wildcard(Topic)),
-    add_subscriber(MP, Topic, SubscriberId, SubInfo),
-    Acc;
-initialize_trie({MP, Topic, {_SubscriberId, _SubInfo, Node, _CleanSession}}, Acc) ->
-    add_complex_topic(MP, Topic, Node, vmq_topic:contains_wildcard(Topic)),
-    add_remote_subscriber(MP, Topic, Node),
-    Acc.
-
-add_complex_topic(_, _, _, false) ->
-    ignore;
-add_complex_topic(MP, Topic, Node, true) ->
-    MPTopic = {MP, Topic},
-    case ets:lookup(vmq_trie_topic, MPTopic) of
-        [] ->
-            ets:insert(vmq_trie_topic, {MPTopic, 1, [{Node, 1}]});
-        [{_, TotalCnt, Nodes}] ->
-            NewNodes = add_and_inc(Node, Nodes),
-            ets:insert(vmq_trie_topic, {MPTopic, TotalCnt + 1, NewNodes})
-    end,
-
-    case ets:lookup(vmq_trie_node, MPTopic) of
-        [#trie_node{topic = Topic}] ->
-            ignore;
-        _ ->
-            %% add trie path
-            _ = [trie_add_path(MP, Triple) || Triple <- vmq_topic:triples(Topic)],
-            %% add last node
-            ets:insert(vmq_trie_node, #trie_node{node_id = MPTopic, topic = Topic})
-    end.
-
-trie_add_path(MP, {Node, Word, Child}) ->
-    NodeId = {MP, Node},
-    Edge = #trie_edge{node_id = NodeId, word = Word},
-    case ets:lookup(vmq_trie_node, NodeId) of
-        [TrieNode = #trie_node{edge_count = Count}] ->
-            case ets:lookup(vmq_trie, Edge) of
-                [] ->
-                    ets:insert(
-                        vmq_trie_node,
-                        TrieNode#trie_node{edge_count = Count + 1}
-                    ),
-                    ets:insert(vmq_trie, #trie{edge = Edge, node_id = Child});
-                [_] ->
-                    ok
-            end;
-        [] ->
-            ets:insert(vmq_trie_node, #trie_node{node_id = NodeId, edge_count = 1}),
-            ets:insert(vmq_trie, #trie{edge = Edge, node_id = Child})
-    end.
 
 trie_match(MP, Words) ->
     trie_match(MP, root, Words, []).
@@ -470,157 +359,9 @@ trie_match(MP, Node, [W | Words], ResAcc) ->
             ResAcc
     end.
 
-del_complex_topic(_, _, _, false) ->
-    ignore;
-del_complex_topic(MP, Topic, NodeOrGroup, true) ->
-    MPTopic = {MP, Topic},
-    case ets:lookup(vmq_trie_topic, MPTopic) of
-        [{_, TotalCnt, Nodes}] when TotalCnt > 1 ->
-            NewNodes = rem_and_dec(NodeOrGroup, Nodes),
-            ets:insert(vmq_trie_topic, {MPTopic, TotalCnt - 1, NewNodes});
-        [{_, 1, _}] ->
-            ets:delete(vmq_trie_topic, MPTopic),
-            trie_delete(MP, Topic);
-        _ ->
-            ignore
-    end.
-
-rem_and_dec(Node, Nodes) ->
-    case lists:keysearch(Node, 1, Nodes) of
-        {value, {_, 1}} ->
-            lists:keydelete(Node, 1, Nodes);
-        {value, {N, C}} ->
-            lists:keyreplace(Node, 1, Nodes, {N, C - 1});
-        false ->
-            Nodes
-    end.
-
-add_and_inc(Node, Nodes) ->
-    case lists:keysearch(Node, 1, Nodes) of
-        {value, {N, C}} ->
-            lists:keyreplace(Node, 1, Nodes, {N, C + 1});
-        false ->
-            [{Node, 1} | Nodes]
-    end.
-
-trie_delete(MP, Topic) ->
-    NodeId = {MP, Topic},
-    case ets:lookup(vmq_trie_node, NodeId) of
-        [#trie_node{edge_count = 0}] ->
-            ets:delete(vmq_trie_node, NodeId),
-            trie_delete_path(MP, lists:reverse(vmq_topic:triples(Topic)));
-        _ ->
-            ignore
-    end.
-
-trie_delete_path(_, []) ->
-    ok;
-trie_delete_path(MP, [{Node, Word, _} | RestPath]) ->
-    NodeId = {MP, Node},
-    Edge = #trie_edge{node_id = NodeId, word = Word},
-    ets:delete(vmq_trie, Edge),
-    case ets:lookup(vmq_trie_node, NodeId) of
-        [#trie_node{edge_count = 1, topic = undefined}] ->
-            ets:delete(vmq_trie_node, NodeId),
-            trie_delete_path(MP, RestPath);
-        [#trie_node{edge_count = Count} = TrieNode] ->
-            ets:insert(vmq_trie_node, TrieNode#trie_node{edge_count = Count - 1});
-        [] ->
-            ignore
-    end.
-
-add_subscriber_group(MP, Node, Group, Topic, SubscriberId, QoS) ->
-    Key = {MP, Group, Node, Topic},
-    Val = {Node, Group, SubscriberId, QoS},
-    insert_trie_subs(Key, Val).
-
-insert_trie_subs(Key, Val) ->
-    E = {Key, Val},
-    case ets:lookup(vmq_trie_subs, Key) of
-        [] ->
-            ets:insert(vmq_trie_subs, E);
-        [E] ->
-            %% duplicate - do nothing;
-            true;
-        [{Key, fanout}] ->
-            ets:insert(vmq_trie_subs_fanout, {E});
-        [E1] ->
-            %% fanout - move to fanout table
-            ets:delete(vmq_trie_subs, Key),
-            ets:insert(vmq_trie_subs, {Key, fanout}),
-            ets:insert(vmq_trie_subs_fanout, {E}),
-            ets:insert(vmq_trie_subs_fanout, {E1})
-    end.
-
-del_subscriber_group(MP, Node, Group, Topic, SubscriberId, QoS) ->
-    Key = {MP, Group, Node, Topic},
-    Val = {Node, Group, SubscriberId, QoS},
-    del_trie_subs(Key, Val).
-
-del_trie_subs(Key, Val) ->
-    case ets:lookup(vmq_trie_subs, Key) of
-        [] ->
-            %% do nothing
-            true;
-        [{Key, fanout}] ->
-            %% we optimistically delete the entry from the fanout table
-            ets:delete(vmq_trie_subs_fanout, {Key, Val}),
-
-            %% select to retrieve max 2 results to determine if we
-            %% need to move back to the normal table.
-            MS = [{{{Key, '$1'}}, [], [{{{Key}, '$1'}}]}],
-            case ets:select(vmq_trie_subs_fanout, MS, 2) of
-                {[E], _Continuation} ->
-                    %% last element in the fanout, move to normal table
-                    ets:delete(vmq_trie_subs_fanout, E),
-                    ets:delete_object(vmq_trie_subs, {Key, fanout}),
-                    ets:insert(vmq_trie_subs, E);
-                {[_, _], _Continuation} ->
-                    %% not last element, do nothing
-                    true
-            end;
-        [{Key, _}] ->
-            ets:delete(vmq_trie_subs, Key)
-    end.
-
-add_subscriber(MP, Topic, SubscriberId, QoS) ->
-    Key = {MP, Topic},
-    Val = {SubscriberId, QoS},
-    insert_trie_subs(Key, Val).
-
-add_remote_subscriber(MP, Topic, Node) ->
-    Key = {MP, Topic},
-    NewRemotes =
-        case ets:lookup(vmq_trie_remote_subs, Key) of
-            [] ->
-                [{Node, 1}];
-            [{_, Remotes}] ->
-                add_and_inc(Node, Remotes)
-        end,
-    ets:insert(vmq_trie_remote_subs, {Key, NewRemotes}).
-
 get_remote_subscribers(MP, Topic) ->
     Key = {MP, Topic},
     case ets:lookup(vmq_trie_remote_subs, Key) of
         [] -> [];
         [{_, Remotes}] -> [{Topic, Node} || {Node, _} <- Remotes]
-    end.
-
-del_subscriber(MP, Topic, SubscriberId, QoS) ->
-    Key = {MP, Topic},
-    Val = {SubscriberId, QoS},
-    del_trie_subs(Key, Val).
-
-del_remote_subscriber(MP, Topic, Node) ->
-    Key = {MP, Topic},
-    case ets:lookup(vmq_trie_remote_subs, Key) of
-        [] ->
-            ignore;
-        [{_, Remotes}] ->
-            case rem_and_dec(Node, Remotes) of
-                [] ->
-                    ets:delete(vmq_trie_remote_subs, Key);
-                NewRemotes ->
-                    ets:insert(vmq_trie_remote_subs, {Key, NewRemotes})
-            end
     end.

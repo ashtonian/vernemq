@@ -132,5 +132,9 @@ init([]) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+reg_view_child_spec(vmq_reg_trie) ->
+    {{reg_view, vmq_reg_trie}, {vmq_reg_trie_sup, start_link, []}, permanent, 5000, supervisor, [
+        vmq_reg_trie_sup
+    ]};
 reg_view_child_spec(ViewModule) ->
     ?CHILD({reg_view, ViewModule}, ViewModule, worker, []).

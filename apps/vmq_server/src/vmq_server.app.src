@@ -39,6 +39,9 @@
         {default_reg_view, vmq_reg_trie},
         {reg_views, [vmq_reg_trie]},
 
+        % reg trie worker opts
+        {reg_trie_workers, 8},
+
         % queue supervisor supervisor opts
         {queue_sup_sup_children, 50},
 
