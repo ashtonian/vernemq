@@ -150,6 +150,8 @@ init([]) ->
     ets:new(?TBL, [public, ordered_set, named_table, {read_concurrency, true}]),
     ok = vmq_webhooks_cache:new(),
     vmq_webhooks_metrics:init(),
+    cache_hook_binaries(),
+    schedule_cache_sweep(),
     {ok, #state{}}.
 
 %%--------------------------------------------------------------------
@@ -232,6 +234,17 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info(sweep_cache, State) ->
+    Purged = vmq_webhooks_cache:purge_expired(),
+    case Purged > 0 of
+        true ->
+            ?LOG_DEBUG("webhook cache sweep purged ~p expired entries", [Purged]);
+        false ->
+            ok
+    end,
+    refresh_ssl_cache(),
+    schedule_cache_sweep(),
+    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -248,8 +261,17 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
     {_Hooks, Vals} = lists:unzip(all_hooks()),
-    {Endpoints, _Opts} = lists:unzip(lists:flatten(Vals)),
-    [hackney_pool:stop_pool(E) || {E, _} <- lists:usort(Endpoints)],
+    Pairs = lists:flatten(Vals),
+    {Endpoints, _Opts} = lists:unzip(Pairs),
+    UniqueEndpoints = lists:usort(Endpoints),
+    lists:foreach(
+        fun(E) ->
+            hackney_pool:stop_pool(E),
+            persistent_term:erase({vmq_webhooks_ssl, E})
+        end,
+        UniqueEndpoints
+    ),
+    persistent_term:erase(vmq_webhooks_hook_bins),
     ok.
 
 %%--------------------------------------------------------------------
@@ -262,6 +284,58 @@ terminate(_Reason, _State) ->
 %%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+%%%===================================================================
+%%% Internal functions
+%%%===================================================================
+schedule_cache_sweep() ->
+    Interval = application:get_env(vmq_webhooks, cache_sweep_interval, 60) * 1000,
+    erlang:send_after(Interval, self(), sweep_cache).
+
+cache_hook_binaries() ->
+    Hooks = [
+        auth_on_register,
+        auth_on_publish,
+        auth_on_subscribe,
+        on_register,
+        on_publish,
+        on_subscribe,
+        on_unsubscribe,
+        on_deliver,
+        on_offline_message,
+        on_client_wakeup,
+        on_client_offline,
+        on_client_gone,
+        on_session_expired,
+        auth_on_register_m5,
+        auth_on_publish_m5,
+        auth_on_subscribe_m5,
+        on_register_m5,
+        on_publish_m5,
+        on_subscribe_m5,
+        on_unsubscribe_m5,
+        on_deliver_m5,
+        on_auth_m5
+    ],
+    HookBins = maps:from_list([{H, atom_to_binary(H, utf8)} || H <- Hooks]),
+    persistent_term:put(vmq_webhooks_hook_bins, HookBins).
+
+cache_ssl_options(Endpoint) ->
+    case Endpoint of
+        <<"https://", _/binary>> ->
+            URL = hackney_url:parse_url(Endpoint),
+            SslOpts = ssl_options(URL#hackney_url.host),
+            persistent_term:put({vmq_webhooks_ssl, Endpoint}, [{ssl_options, SslOpts}]);
+        _ ->
+            persistent_term:put({vmq_webhooks_ssl, Endpoint}, [])
+    end.
+
+refresh_ssl_cache() ->
+    AllEndpoints = lists:usort([
+        EP
+     || {_Hook, Endpoints} <- all_hooks(), {EP, _Opts} <- Endpoints
+    ]),
+    lists:foreach(fun cache_ssl_options/1, AllEndpoints).
 
 %%%===================================================================
 %%% Hook functions
@@ -633,7 +707,8 @@ maybe_start_pool(Endpoint) ->
     {ok, PoolTimeout} = application:get_env(vmq_webhooks, pool_timeout),
     {ok, PoolMaxConn} = application:get_env(vmq_webhooks, pool_max_connections),
     Opts = [{timeout, PoolTimeout}, {max_connections, PoolMaxConn}],
-    ok = hackney_pool:start_pool(Endpoint, Opts).
+    ok = hackney_pool:start_pool(Endpoint, Opts),
+    cache_ssl_options(Endpoint).
 
 -spec maybe_stop_pool(_) -> 'ok' | {'error', 'not_found' | 'simple_one_for_one'}.
 maybe_stop_pool(Endpoint) ->
@@ -644,8 +719,11 @@ maybe_stop_pool(Endpoint) ->
         all_hooks()
     ),
     case InUse of
-        [] -> hackney_pool:stop_pool(Endpoint);
-        _ -> ok
+        [] ->
+            hackney_pool:stop_pool(Endpoint),
+            persistent_term:erase({vmq_webhooks_ssl, Endpoint});
+        _ ->
+            ok
     end.
 
 -spec enable_hook(hook_name()) -> 'ok' | {'error', 'no_matching_callback_found'}.
@@ -869,12 +947,18 @@ ssl_options(Endpoint) ->
     ]).
 -spec maybe_ssl_opts(binary()) -> proplists:proplist().
 maybe_ssl_opts(Endpoint) ->
-    case Endpoint of
-        <<"https://", _Rest/binary>> ->
-            URL = hackney_url:parse_url(Endpoint),
-            [{ssl_options, ssl_options(URL#hackney_url.host)}];
-        _ ->
-            []
+    try
+        persistent_term:get({vmq_webhooks_ssl, Endpoint})
+    catch
+        error:badarg ->
+            %% Fallback for endpoints not yet cached (e.g., during startup race)
+            case Endpoint of
+                <<"https://", _Rest/binary>> ->
+                    URL = hackney_url:parse_url(Endpoint),
+                    [{ssl_options, ssl_options(URL#hackney_url.host)}];
+                _ ->
+                    []
+            end
     end.
 -spec maybe_call_endpoint(_, _, hook_name(), [{atom(), _}, ...]) -> any().
 maybe_call_endpoint(Endpoint, EOpts, Hook, Args) when
@@ -914,9 +998,10 @@ maybe_call_endpoint(Endpoint, EOpts, Hook, Args) ->
 ) -> any().
 call_endpoint(Endpoint, EOpts, Hook, Args0) ->
     Method = post,
+    HookBin = maps:get(Hook, persistent_term:get(vmq_webhooks_hook_bins)),
     Headers = [
         {<<"Content-Type">>, <<"application/json">>},
-        {<<"vernemq-hook">>, atom_to_binary(Hook, utf8)}
+        {<<"vernemq-hook">>, HookBin}
     ],
     Opts =
         [
@@ -942,6 +1027,7 @@ call_endpoint(Endpoint, EOpts, Hook, Args0) ->
                                 {error, received_payload_not_json}
                         end;
                     {error, _} = E ->
+                        hackney:close(CRef),
                         E
                 end;
             {ok, Code, _, CRef} ->

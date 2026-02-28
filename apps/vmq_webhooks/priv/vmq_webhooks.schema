@@ -118,6 +118,13 @@
   hidden,
   {default, "    webhooks    Manage webhooks\n"}]}.
 
+%% @doc Configure the interval in seconds between cache sweep runs that
+%% purge expired entries. Defaults to 60 seconds.
+{mapping, "vmq_webhooks.cache_sweep_interval", "vmq_webhooks.cache_sweep_interval",
+ [{datatype, integer},
+  hidden,
+  {default, 60}]}.
+
 %% @doc Configure the maximum number of HTTP connections maintained in the webhooks pool.
 {mapping, "vmq_webhooks.pool_max_connections", "vmq_webhooks.pool_max_connections",
  [{datatype, integer},

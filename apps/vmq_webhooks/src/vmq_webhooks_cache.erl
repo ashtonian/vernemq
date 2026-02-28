@@ -27,7 +27,8 @@
     lookup/3,
     insert/5,
     stats/0,
-    purge_all/0
+    purge_all/0,
+    purge_expired/0
 ]).
 
 -define(CACHE, vmq_webhooks_cache).
@@ -48,6 +49,21 @@ reset_stats() ->
 purge_all() ->
     ets:delete_all_objects(?CACHE),
     reset_stats().
+
+-spec purge_expired() -> non_neg_integer().
+purge_expired() ->
+    Now = trunc(erlang:system_time() / 1000000000),
+    ExpiredKeys = ets:select(?CACHE, [
+        {{'$1', '_', '$2', '_'}, [{'<', '$2', Now}], ['$1']}
+    ]),
+    lists:foreach(
+        fun({Endpoint, Hook, _Args} = Key) ->
+            ets:delete(?CACHE, Key),
+            decr_entry(Endpoint, Hook)
+        end,
+        ExpiredKeys
+    ),
+    length(ExpiredKeys).
 
 -spec filter_args(['payload' | 'port'], _) -> any().
 filter_args(Keys, Args) when Keys =:= [] -> Args;
