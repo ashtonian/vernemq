@@ -1644,6 +1644,8 @@ misc_statistics() ->
         fetch_external_metric(vmq_cluster, netsplit_statistics, {0, 0}),
     {BalanceAccepting, BalanceLocalConns, BalanceClusterAvg, BalanceEnabled, BalanceRejections} =
         fetch_external_metric(vmq_balance_srv, balance_stats, {1, 0, 0, 0, 0}),
+    {RebalanceDisconnections, RebalanceRounds} =
+        fetch_external_metric(vmq_balance_rebalancer, rebalance_stats, {0, 0}),
     [
         {netsplit_detected, NetsplitDetectedCount},
         {netsplit_resolved, NetsplitResolvedCount},
@@ -1659,7 +1661,9 @@ misc_statistics() ->
         {balance_local_connections, BalanceLocalConns},
         {balance_cluster_avg, BalanceClusterAvg},
         {balance_is_enabled, BalanceEnabled},
-        {balance_rejections, BalanceRejections}
+        {balance_rejections, BalanceRejections},
+        {rebalance_disconnections, RebalanceDisconnections},
+        {rebalance_rounds, RebalanceRounds}
     ].
 
 -spec misc_stats_def() -> [metric_def()].
@@ -1763,6 +1767,20 @@ misc_stats_def() ->
             balance_rejections,
             balance_rejections,
             <<"Total connections rejected by cluster auto-balance.">>
+        ),
+        m(
+            gauge,
+            [],
+            rebalance_disconnections,
+            rebalance_disconnections,
+            <<"Total sessions disconnected by the active rebalancer.">>
+        ),
+        m(
+            gauge,
+            [],
+            rebalance_rounds,
+            rebalance_rounds,
+            <<"Total rebalance rounds executed.">>
         )
     ].
 

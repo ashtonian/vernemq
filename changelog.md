@@ -16,6 +16,10 @@
   - MQTT connection rejection is controlled by a separate `balance_reject_enabled` flag (default `off`), decoupled from `balance_enabled`. This allows using the HTTP health endpoint for load balancer steering without hard-rejecting MQTT connections.
   - Auth hooks (`auth_on_register` / `auth_on_register_m5`) are dynamically registered only when both flags are on, eliminating per-connection overhead when rejection is disabled.
   - Existing sessions are allowed to reconnect even when rejecting.
+  - CLI commands: `vmq-admin balance show/status/rebalance` for inspecting balance state and triggering rebalance.
+  - Active rebalancer (Layer 3): gracefully disconnects excess sessions on overloaded nodes so they reconnect through the load balancer.
+  - New config: `rebalance_enabled`, `rebalance_threshold`, `rebalance_batch_size`, `rebalance_cooldown`, `rebalance_on_node_join`, `rebalance_stable_interval`, `rebalance_auto_interval`.
+  - New Prometheus metrics: `rebalance_disconnections`, `rebalance_rounds`.
 
 
 ## VerneMQ 2.1.1

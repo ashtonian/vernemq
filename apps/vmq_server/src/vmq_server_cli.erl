@@ -80,6 +80,7 @@ register_cli() ->
     vmq_ssl_cli:register_cli(),
 
     vmq_tracer_cli:register_cli(),
+    vmq_balance_cli:register_cli(),
     ok.
 
 register_cli_usage() ->
@@ -801,6 +802,7 @@ usage() ->
         "    api-key     Manage API keys for the HTTP management interface\n",
         "    trace       Trace various aspects of VerneMQ\n",
         "    tls         Manage TLS/SSL\n",
+        "    balance     Manage cluster connection auto-balancing\n",
         "    log         Manage log\n",
         remove_ok(vmq_plugin_mgr:get_usage_lead_lines()),
         "  Use --help after a sub-command for more details.\n"

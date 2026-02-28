@@ -22,6 +22,7 @@
     start_link/0,
     is_accepting/0,
     balance_stats/0,
+    get_node_counts/0,
     incr_rejections/0
 ]).
 
@@ -92,6 +93,14 @@ balance_stats() ->
         _:_ -> {1, 0, 0, 0, 0}
     end.
 
+-spec get_node_counts() -> #{node() => non_neg_integer()}.
+get_node_counts() ->
+    try
+        gen_server:call(?SERVER, get_node_counts, 2000)
+    catch
+        _:_ -> #{node() => 0}
+    end.
+
 -spec incr_rejections() -> ok.
 incr_rejections() ->
     gen_server:cast(?SERVER, incr_rejections).
@@ -146,6 +155,8 @@ handle_call(balance_stats, _From, #state{} = State) ->
         RejectionCount
     },
     {reply, Reply, State};
+handle_call(get_node_counts, _From, #state{node_counts = NodeCounts} = State) ->
+    {reply, NodeCounts, State};
 handle_call(_Request, _From, State) ->
     {reply, ok, State}.
 

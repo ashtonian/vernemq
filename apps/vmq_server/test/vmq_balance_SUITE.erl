@@ -71,7 +71,21 @@ all() ->
 
         %% Integration: single-node balance behavior
         balance_single_node_always_accepts_test,
-        balance_enabled_single_node_always_accepts_test
+        balance_enabled_single_node_always_accepts_test,
+
+        %% Rebalancer tests
+        rebalancer_starts_test,
+        rebalancer_stats_defaults_test,
+        rebalancer_disabled_returns_error_test,
+        rebalancer_needs_both_flags_test,
+        rebalancer_force_disconnects_sessions_test,
+        rebalancer_metrics_test,
+
+        %% Auto-interval rebalancer test
+        rebalancer_auto_interval_schedules_test,
+
+        %% Node counts API test
+        get_node_counts_test
     ].
 
 %% ===================================================================
@@ -406,6 +420,144 @@ balance_enabled_single_node_always_accepts_test(_Config) ->
     ?assert(vmq_balance_srv:is_accepting()),
     gen_tcp:close(Socket),
     vmq_server_cmd:listener_stop(1888, "127.0.0.1", false).
+
+%% ===================================================================
+%% Rebalancer tests
+%% ===================================================================
+
+rebalancer_starts_test(_Config) ->
+    %% vmq_balance_rebalancer should be running as part of the supervision tree
+    Pid = erlang:whereis(vmq_balance_rebalancer),
+    ?assert(is_pid(Pid)),
+    ?assert(is_process_alive(Pid)).
+
+rebalancer_stats_defaults_test(_Config) ->
+    %% Default stats should be {0, 0}
+    {Disconnections, Rounds} = vmq_balance_rebalancer:rebalance_stats(),
+    ?assertEqual(0, Disconnections),
+    ?assertEqual(0, Rounds).
+
+rebalancer_disabled_returns_error_test(_Config) ->
+    %% With balance_enabled=false (default), trigger_rebalance should return disabled
+    ?assertEqual({error, disabled}, vmq_balance_rebalancer:trigger_rebalance(false)),
+    ?assertEqual({error, disabled}, vmq_balance_rebalancer:trigger_rebalance(true)).
+
+rebalancer_needs_both_flags_test(_Config) ->
+    %% Only balance_enabled=true but rebalance_enabled=false -> disabled
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(rebalance_enabled, false, false),
+    ?assertEqual({error, disabled}, vmq_balance_rebalancer:trigger_rebalance(true)),
+    %% Only rebalance_enabled=true but balance_enabled=false -> disabled
+    vmq_config:set_env(balance_enabled, false, false),
+    vmq_config:set_env(rebalance_enabled, true, false),
+    ?assertEqual({error, disabled}, vmq_balance_rebalancer:trigger_rebalance(true)),
+    %% Both enabled -> should not return disabled (may return other error on single node)
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(rebalance_enabled, true, false),
+    Result = vmq_balance_rebalancer:trigger_rebalance(true),
+    ?assertNotEqual({error, disabled}, Result).
+
+rebalancer_force_disconnects_sessions_test(_Config) ->
+    %% Enable balance and rebalance, connect clients, fake overload, trigger rebalance
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(rebalance_enabled, true, false),
+    vmq_config:set_env(rebalance_threshold, "1.0", false),
+    vmq_config:set_env(rebalance_batch_size, 100, false),
+    vmq_config:set_env(rebalance_cooldown, 0, false),
+    restart_balance_srv(),
+    timer:sleep(200),
+
+    %% Start listener and connect multiple clients
+    vmq_server_cmd:listener_start(1888, []),
+    NumClients = 5,
+    Sockets = lists:map(
+        fun(I) ->
+            ClientId = "rebal-test-" ++ integer_to_list(I),
+            Connect = packet:gen_connect(ClientId, [{keepalive, 60}]),
+            Connack = packet:gen_connack(0),
+            {ok, Socket} = packet:do_client_connect(Connect, Connack, []),
+            Socket
+        end,
+        lists:seq(1, NumClients)
+    ),
+
+    %% Wait for balance check to pick up connections
+    timer:sleep(300),
+
+    %% Use sys:replace_state to fake multi-node scenario with overloaded local node.
+    %% Make it look like there are 2 nodes: local has many, "fake" has few.
+    %% node_counts field is at position 4 in the #state record (after local_count,
+    %% cluster_avg). We need to find the right field positions.
+    %% #state{local_count=2, cluster_avg=3, node_counts=4, accepting=5, enabled=6, ...}
+    FakeOtherNode = 'fake_other@127.0.0.1',
+    sys:replace_state(vmq_balance_srv, fun(State) ->
+        %% Set node_counts to show local node overloaded relative to a fake node
+        %% Record: {state, local_count, cluster_avg, node_counts, accepting, enabled, ...}
+        NodeCounts = #{node() => NumClients, FakeOtherNode => 0},
+        setelement(4, State, NodeCounts)
+    end),
+
+    %% Trigger rebalance with force (skip stability check)
+    Result = vmq_balance_rebalancer:trigger_rebalance(true),
+    ?assertMatch({ok, _}, Result),
+    {ok, #{disconnected := D}} = Result,
+    ?assert(D > 0),
+
+    %% Cleanup
+    lists:foreach(fun(S) -> catch gen_tcp:close(S) end, Sockets),
+    vmq_server_cmd:listener_stop(1888, "127.0.0.1", false).
+
+rebalancer_metrics_test(_Config) ->
+    %% Verify rebalance stats are exposed through metrics
+    {RebalanceDisconnections, RebalanceRounds} = vmq_balance_rebalancer:rebalance_stats(),
+    ?assert(is_integer(RebalanceDisconnections)),
+    ?assert(is_integer(RebalanceRounds)),
+    ?assert(RebalanceDisconnections >= 0),
+    ?assert(RebalanceRounds >= 0).
+
+rebalancer_auto_interval_schedules_test(_Config) ->
+    %% Verify that the auto_interval timer is scheduled and re-checked.
+    %% With rebalance disabled (default), the timer should still run
+    %% (slow re-check at 60s) but not trigger a rebalance.
+    Pid = erlang:whereis(vmq_balance_rebalancer),
+    ?assert(is_pid(Pid)),
+    ?assert(is_process_alive(Pid)),
+
+    %% Set auto_interval to a short value and enable rebalance
+    vmq_config:set_env(rebalance_auto_interval, 1, false),
+    vmq_config:set_env(balance_enabled, true, false),
+    vmq_config:set_env(rebalance_enabled, true, false),
+
+    %% Restart the rebalancer to pick up the new config in init
+    supervisor:terminate_child(vmq_server_sup, vmq_balance_rebalancer),
+    supervisor:restart_child(vmq_server_sup, vmq_balance_rebalancer),
+    timer:sleep(100),
+
+    %% The rebalancer should still be alive after the timer fires
+    %% (on a single node, rebalance is a no-op since NumNodes <= 1)
+    NewPid = erlang:whereis(vmq_balance_rebalancer),
+    ?assert(is_pid(NewPid)),
+    ?assert(is_process_alive(NewPid)),
+
+    %% Wait for at least one auto_interval tick (1 second + buffer)
+    timer:sleep(1500),
+
+    %% Process should still be alive and stats accessible
+    ?assert(is_process_alive(NewPid)),
+    {Disconnections, Rounds} = vmq_balance_rebalancer:rebalance_stats(),
+    ?assert(is_integer(Disconnections)),
+    ?assert(is_integer(Rounds)),
+
+    %% Verify runtime config change: set interval to 0 (disabled)
+    %% Timer should still re-check at the slow interval
+    vmq_config:set_env(rebalance_auto_interval, 0, false),
+    timer:sleep(1500),
+    ?assert(is_process_alive(whereis(vmq_balance_rebalancer))).
+
+get_node_counts_test(_Config) ->
+    %% get_node_counts should return a map
+    NodeCounts = vmq_balance_srv:get_node_counts(),
+    ?assert(is_map(NodeCounts)).
 
 %% ===================================================================
 %% Cluster tests
