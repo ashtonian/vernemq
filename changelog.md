@@ -7,6 +7,7 @@
 - Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
 - Enhancement: Don't log msg payload in pubauth errors.
 - Bugfix: active connections count for WS in metrics and listener info.
+- Enhancement: Increase default cluster communication watermarks from 8KB to 1MB (high) and 4KB to 512KB (low) to reduce flow-control oscillation and improve inter-node throughput under load.
 
 
 ## VerneMQ 2.1.1
