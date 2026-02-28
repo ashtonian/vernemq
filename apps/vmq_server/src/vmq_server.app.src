@@ -125,6 +125,8 @@
         %{graphite_api_key, ""},
         %{graphite_prefix, ""}
 
+        {dead_node_cleanup_timeout, 0},
+
         % Systree
         {systree_enabled, true}
         %{systree_interval, 20000},

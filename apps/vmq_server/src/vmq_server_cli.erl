@@ -68,6 +68,7 @@ register_cli() ->
     vmq_server_history_cmd(),
     vmq_cluster_join_cmd(),
     vmq_cluster_leave_cmd(),
+    vmq_cluster_dead_nodes_cmd(),
     vmq_cluster_upgrade_cmd(),
 
     vmq_mgmt_add_api_key_cmd(),
@@ -98,6 +99,7 @@ register_cli_usage() ->
     clique:register_usage(["vmq-admin", "cluster"], cluster_usage()),
     clique:register_usage(["vmq-admin", "cluster", "join"], join_usage()),
     clique:register_usage(["vmq-admin", "cluster", "leave"], leave_usage()),
+    clique:register_usage(["vmq-admin", "cluster", "dead-nodes"], dead_nodes_usage()),
 
     clique:register_usage(["vmq-admin", "metrics"], metrics_usage()),
     clique:register_usage(["vmq-admin", "metrics", "show"], fun metrics_show_usage/0),
@@ -519,6 +521,34 @@ wait_till_all_offline(Sleep, N) ->
             wait_till_all_offline(Sleep, N - 1)
     end.
 
+vmq_cluster_dead_nodes_cmd() ->
+    Cmd = ["vmq-admin", "cluster", "dead-nodes"],
+    Callback = fun(_, _, _) ->
+        Status = vmq_cluster_mon:dead_node_status(),
+        Timeout = vmq_config:get_env(dead_node_cleanup_timeout, 0),
+        case Status of
+            [] ->
+                [
+                    clique_status:text(
+                        io_lib:format("No dead nodes tracked. Auto-cleanup timeout: ~ps", [Timeout])
+                    )
+                ];
+            _ ->
+                Table = lists:map(
+                    fun({Node, DownSecs}) ->
+                        [
+                            {'Node', Node},
+                            {'Down (seconds)', DownSecs},
+                            {'Cleanup Timeout', Timeout}
+                        ]
+                    end,
+                    Status
+                ),
+                [clique_status:table(Table)]
+        end
+    end,
+    clique:register_command(Cmd, [], [], Callback).
+
 vmq_cluster_join_cmd() ->
     Cmd = ["vmq-admin", "cluster", "join"],
     KeySpecs = [
@@ -773,6 +803,15 @@ leave_usage() ->
         "\n\n"
     ].
 
+dead_nodes_usage() ->
+    [
+        "vmq-admin cluster dead-nodes\n\n",
+        "  Shows tracked dead cluster nodes with their down duration and the\n",
+        "  configured auto-cleanup timeout. Nodes exceeding the timeout will\n",
+        "  be automatically cleaned up if a quorum of cluster members is\n",
+        "  reachable.\n"
+    ].
+
 upgrade_usage() ->
     [
         "vmq-admin node upgrade [--upgrade-now]\n\n",
@@ -824,7 +863,8 @@ cluster_usage() ->
         "  Sub-commands:\n",
         "    show        Prints cluster information\n",
         "    join        Join a cluster\n",
-        "    leave       Leave the cluster\n\n",
+        "    leave       Leave the cluster\n",
+        "    dead-nodes  Show tracked dead nodes and auto-cleanup status\n\n",
         "  Use --help after a sub-command for more details.\n"
     ].
 
