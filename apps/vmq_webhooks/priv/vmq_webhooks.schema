@@ -7,214 +7,263 @@
 %% <hook> with the name <name>. Webhooks are registered in the order
 %% of the name given to it. Therefore a webhook with name 'webhook1'
 %% is registered before a webhook with the name 'webhook2'.
-{mapping, "vmq_webhooks.$name.hook", "vmq_webhooks.user_webhooks",
- [
-  {datatype, {enum,
-              [auth_on_register,
-               auth_on_publish,
-               auth_on_subscribe,
-               on_register,
-               on_publish,
-               on_subscribe,
-               on_unsubscribe,
-               on_deliver,
-               on_offline_message,
-               on_client_wakeup,
-               on_client_offline,
-               on_client_gone,
-               on_session_expired,
-               auth_on_register_m5,
-               auth_on_publish_m5,
-               auth_on_subscribe_m5,
-               on_register_m5,
-               on_publish_m5,
-               on_subscribe_m5,
-               on_unsubscribe_m5,
-               on_deliver_m5,
-               on_auth_m5]}},
-  {commented, "auth_on_register"},
-  {include_default, "webhook1"}
- ]}.
+{mapping, "vmq_webhooks.$name.hook", "vmq_webhooks.user_webhooks", [
+    {datatype,
+        {enum, [
+            auth_on_register,
+            auth_on_publish,
+            auth_on_subscribe,
+            on_register,
+            on_publish,
+            on_subscribe,
+            on_unsubscribe,
+            on_deliver,
+            on_offline_message,
+            on_client_wakeup,
+            on_client_offline,
+            on_client_gone,
+            on_session_expired,
+            auth_on_register_m5,
+            auth_on_publish_m5,
+            auth_on_subscribe_m5,
+            on_register_m5,
+            on_publish_m5,
+            on_subscribe_m5,
+            on_unsubscribe_m5,
+            on_deliver_m5,
+            on_auth_m5
+        ]}},
+    {commented, "auth_on_register"},
+    {include_default, "webhook1"}
+]}.
 
 %% @doc Associate an endpoint with a name.
-{mapping, "vmq_webhooks.$name.endpoint", "vmq_webhooks.user_webhooks",
- [
-  {datatype, string},
-  {commented, "http://localhost/myendpoints"},
-  {include_default, "webhook1"}
- ]}.
+{mapping, "vmq_webhooks.$name.endpoint", "vmq_webhooks.user_webhooks", [
+    {datatype, string},
+    {commented, "http://localhost/myendpoints"},
+    {include_default, "webhook1"}
+]}.
 
 %% @doc Control if the payload should be base64 encoded.
-{mapping, "vmq_webhooks.$name.base64encode", "vmq_webhooks.user_webhooks",
- [
-  {datatype, flag},
-  {default, on},
-  {commented, "false"},
-  {include_default, "webhook1"},
-  hidden
- ]}.
+{mapping, "vmq_webhooks.$name.base64encode", "vmq_webhooks.user_webhooks", [
+    {datatype, flag},
+    {default, on},
+    {commented, "false"},
+    {include_default, "webhook1"},
+    hidden
+]}.
 
 %% @doc Applies only to the auth_on_publish and auth_on_publish_m5
 %% webhooks. If true the MQTT payload is omitted from the JSON
 %% object. Defaults to false.
-{mapping, "vmq_webhooks.$name.no_payload", "vmq_webhooks.user_webhooks",
- [
-  {datatype, flag},
-  {default, off},
-  {commented, "false"},
-  {include_default, "webhook1"},
-  hidden
- ]}.
+{mapping, "vmq_webhooks.$name.no_payload", "vmq_webhooks.user_webhooks", [
+    {datatype, flag},
+    {default, off},
+    {commented, "false"},
+    {include_default, "webhook1"},
+    hidden
+]}.
 
 %% @doc Configure the timeout the HTTP client will wait for a response
 %% from the remote endpoint. Default to 5000 milliseconds.
-{mapping, "vmq_webhooks.$name.response_timeout", "vmq_webhooks.user_webhooks",
- [{datatype, integer},
-  hidden,
-  {default, 5000}]}.
+{mapping, "vmq_webhooks.$name.response_timeout", "vmq_webhooks.user_webhooks", [
+    {datatype, integer},
+    hidden,
+    {default, 5000}
+]}.
 
-{translation,
- "vmq_webhooks.user_webhooks",
- fun(Conf) ->
-         Suffixes = ["hook", "endpoint", "base64encode", "no_payload", "response_timeout"],
-         UNames =
-             [
-              proplists:get_all_values(
+{translation, "vmq_webhooks.user_webhooks", fun(Conf) ->
+    Suffixes = ["hook", "endpoint", "base64encode", "no_payload", "response_timeout"],
+    UNames =
+        [
+            proplists:get_all_values(
                 "$name",
-                cuttlefish_variable:fuzzy_matches(["vmq_webhooks", "$name", Suffix], Conf))
-               || Suffix <- Suffixes ],
-         HookNames = lists:usort(lists:append(UNames)),
-         Webhooks =
-             [ {SortName,
-                #{
-                  hook => cuttlefish:conf_get("vmq_webhooks." ++ SortName ++ ".hook", Conf, undefined),
-                  endpoint => cuttlefish:conf_get("vmq_webhooks." ++ SortName ++ ".endpoint", Conf, undefined),
-                  options =>
-                      #{ base64_payload =>
-                             cuttlefish:conf_get("vmq_webhooks." ++ SortName ++
-                                                     ".base64encode", Conf, true),
-                         no_payload =>
-                             cuttlefish:conf_get("vmq_webhooks." ++ SortName ++
-                                                     ".no_payload", Conf, false),
-                         response_timeout => cuttlefish:conf_get("vmq_webhooks." ++ SortName ++
-                                                                     ".response_timeout", Conf, 8000)
-                       }
-                 }}
-               || SortName <- HookNames ],
-         lists:map(
-           fun({SortName, #{endpoint := undefined}}) ->
-                   cuttlefish:invalid("vmq_webhooks."
-                                      ++ SortName ++ ".endpoint is not defined");
-              ({SortName, #{hook := undefined}}) ->
-                   cuttlefish:invalid("vmq_webhooks."
-                                      ++ SortName ++ ".hook is not defined");
-              ({SortName, #{endpoint := Endpoint} = WH}) ->
-                   {SortName, maps:update(endpoint, list_to_binary(Endpoint), WH)}
-           end, Webhooks)
- end}.
+                cuttlefish_variable:fuzzy_matches(["vmq_webhooks", "$name", Suffix], Conf)
+            )
+         || Suffix <- Suffixes
+        ],
+    HookNames = lists:usort(lists:append(UNames)),
+    Webhooks =
+        [
+            {SortName, #{
+                hook => cuttlefish:conf_get(
+                    "vmq_webhooks." ++ SortName ++ ".hook", Conf, undefined
+                ),
+                endpoint => cuttlefish:conf_get(
+                    "vmq_webhooks." ++ SortName ++ ".endpoint", Conf, undefined
+                ),
+                options =>
+                    #{
+                        base64_payload =>
+                            cuttlefish:conf_get(
+                                "vmq_webhooks." ++ SortName ++
+                                    ".base64encode",
+                                Conf,
+                                true
+                            ),
+                        no_payload =>
+                            cuttlefish:conf_get(
+                                "vmq_webhooks." ++ SortName ++
+                                    ".no_payload",
+                                Conf,
+                                false
+                            ),
+                        response_timeout => cuttlefish:conf_get(
+                            "vmq_webhooks." ++ SortName ++
+                                ".response_timeout",
+                            Conf,
+                            8000
+                        )
+                    }
+            }}
+         || SortName <- HookNames
+        ],
+    lists:map(
+        fun
+            ({SortName, #{endpoint := undefined}}) ->
+                cuttlefish:invalid(
+                    "vmq_webhooks." ++
+                        SortName ++ ".endpoint is not defined"
+                );
+            ({SortName, #{hook := undefined}}) ->
+                cuttlefish:invalid(
+                    "vmq_webhooks." ++
+                        SortName ++ ".hook is not defined"
+                );
+            ({SortName, #{endpoint := Endpoint} = WH}) ->
+                {SortName, maps:update(endpoint, list_to_binary(Endpoint), WH)}
+        end,
+        Webhooks
+    )
+end}.
 
-{mapping, "vmq_webhooks.clique_lead_line", "vmq_webhooks.clique_lead_line",
- [{datatype, string},
-  hidden,
-  {default, "    webhooks    Manage webhooks\n"}]}.
+{mapping, "vmq_webhooks.clique_lead_line", "vmq_webhooks.clique_lead_line", [
+    {datatype, string},
+    hidden,
+    {default, "    webhooks    Manage webhooks\n"}
+]}.
 
 %% @doc Configure the interval in seconds between cache sweep runs that
 %% purge expired entries. Defaults to 60 seconds.
-{mapping, "vmq_webhooks.cache_sweep_interval", "vmq_webhooks.cache_sweep_interval",
- [{datatype, integer},
-  hidden,
-  {default, 60}]}.
+{mapping, "vmq_webhooks.cache_sweep_interval", "vmq_webhooks.cache_sweep_interval", [
+    {datatype, integer},
+    hidden,
+    {default, 60}
+]}.
+
+%% @doc Configure the maximum number of concurrent async workers for
+%% fire-and-forget notification webhooks (on_publish, on_register, etc.).
+%% When all workers are busy, new notifications are dropped with a warning.
+%% Defaults to 100.
+{mapping, "vmq_webhooks.async_pool_size", "vmq_webhooks.async_pool_size", [
+    {datatype, integer},
+    hidden,
+    {default, 100}
+]}.
 
 %% @doc Configure the maximum number of HTTP connections maintained in the webhooks pool.
-{mapping, "vmq_webhooks.pool_max_connections", "vmq_webhooks.pool_max_connections",
- [{datatype, integer},
-  hidden,
-  {default, 100}]}.
+{mapping, "vmq_webhooks.pool_max_connections", "vmq_webhooks.pool_max_connections", [
+    {datatype, integer},
+    hidden,
+    {default, 100}
+]}.
 
 %% @doc Configure the timeout that we keep the connection alive in the
 %% webhooks connection pool, expressed in milliseconds.
-{mapping, "vmq_webhooks.pool_timeout", "vmq_webhooks.pool_timeout",
- [{datatype, integer},
-  hidden,
-  {default, 60000}]}.
+{mapping, "vmq_webhooks.pool_timeout", "vmq_webhooks.pool_timeout", [
+    {datatype, integer},
+    hidden,
+    {default, 60000}
+]}.
 
 %% @doc Configure a Certificate Authority file to verify when calling
 %% HTTPS webhooks.
-{mapping, "vmq_webhooks.cafile", "vmq_webhooks.cafile",
- [{default, ""},
-  {datatype, file},
-  {validators, ["file-exists", "file-is-readable", "file-is-pem"]},
-  hidden]}.
+{mapping, "vmq_webhooks.cafile", "vmq_webhooks.cafile", [
+    {default, ""},
+    {datatype, file},
+    {validators, ["file-exists", "file-is-readable", "file-is-pem"]},
+    hidden
+]}.
 
 %% @doc Configure TLS version for HTTPS webhook calls
 %% HTTPS webhooks.
-{mapping, "vmq_webhooks.tls_version", "vmq_webhooks.tls_version",
-[{default, 'tlsv1.2'},
- {datatype, atom},
- {commented, 'tlsv1.2'}]}.
+{mapping, "vmq_webhooks.tls_version", "vmq_webhooks.tls_version", [
+    {default, 'tlsv1.2'},
+    {datatype, atom},
+    {commented, 'tlsv1.2'}
+]}.
 
 %% @doc Should we verify the peer (web server) certificate for HTTPS calls?
-{mapping, "vmq_webhooks.verify_peer", "vmq_webhooks.verify_peer",
-[{default, on},
- {datatype, flag},
- hidden]}.
+{mapping, "vmq_webhooks.verify_peer", "vmq_webhooks.verify_peer", [
+    {default, on},
+    {datatype, flag},
+    hidden
+]}.
 
 %% @doc When dealing with an intermediate CA, it might be required to
 %% increase the peer verification depth to have a server certificate
 %% correctly validated. This matches the default in the Hackney web client
-{mapping, "vmq_webhooks.depth", "vmq_webhooks.depth",
-[{default, 100},
- {datatype, integer},
- hidden]}.
+{mapping, "vmq_webhooks.depth", "vmq_webhooks.depth", [
+    {default, 100},
+    {datatype, integer},
+    hidden
+]}.
 
 %% @doc Configure a client certificate file to include in webhook HTTPS
 %% requests.
-{mapping, "vmq_webhooks.certfile", "vmq_webhooks.certfile",
- [{default, ""},
-  {datatype, file},
-  {validators, ["file-exists", "file-is-readable", "file-is-pem"]},
-  hidden]}.
+{mapping, "vmq_webhooks.certfile", "vmq_webhooks.certfile", [
+    {default, ""},
+    {datatype, file},
+    {validators, ["file-exists", "file-is-readable", "file-is-pem"]},
+    hidden
+]}.
 
 %% @doc Configure Certificate Revocation List (CRL) use in webhook HTTPS
 %% requests.
-{mapping, "vmq_webhooks.use_crls", "vmq_webhooks.use_crls",
- [{default, true},
-  {datatype, flag},
-  hidden]}.
+{mapping, "vmq_webhooks.use_crls", "vmq_webhooks.use_crls", [
+    {default, true},
+    {datatype, flag},
+    hidden
+]}.
 
 %% @doc Configure a PEM-encoded client keyfile to include in webhook
 %% HTTPS requests.
-{mapping, "vmq_webhooks.keyfile", "vmq_webhooks.keyfile",
- [{default, ""},
-  {datatype, file},
-  {validators, ["file-exists", "file-is-readable", "file-is-pem"]},
-  hidden]}.
+{mapping, "vmq_webhooks.keyfile", "vmq_webhooks.keyfile", [
+    {default, ""},
+    {datatype, file},
+    {validators, ["file-exists", "file-is-readable", "file-is-pem"]},
+    hidden
+]}.
 
 %% @doc Configure a password to client keyfile used in webhook HTTPS
 %% requests.
-{mapping, "vmq_webhooks.keyfile_password", "vmq_webhooks.keyfile_password",
- [{default, ""},
-  {datatype, string},
-  hidden]}.
+{mapping, "vmq_webhooks.keyfile_password", "vmq_webhooks.keyfile_password", [
+    {default, ""},
+    {datatype, string},
+    hidden
+]}.
 
-{validator, "file-exists", "file does not exist",
- fun("") ->
-         %% "" is used as the default value in most places, we should
-         %% not error out because of that.
-         true;
-    (Name) -> vmq_schema_util:file_exists(Name)
- end}.
-{validator, "file-is-readable", "file is not readable, check permissions",
- fun("") ->
-         %% "" is used as the default value in most places, we should
-         %% not error out because of that.
-         true;
-    (Name) -> vmq_schema_util:file_is_readable(Name)
- end}.
-{validator, "file-is-pem", "file is not PEM-encoded with one or more entries",
- fun("") ->
-         %% "" is used as the default value in most places, we should
-         %% not error out because of that.
-         true;
-    (Name) -> vmq_schema_util:file_is_pem_content(Name)
- end}.
+{validator, "file-exists", "file does not exist", fun
+    ("") ->
+        %% "" is used as the default value in most places, we should
+        %% not error out because of that.
+        true;
+    (Name) ->
+        vmq_schema_util:file_exists(Name)
+end}.
+{validator, "file-is-readable", "file is not readable, check permissions", fun
+    ("") ->
+        %% "" is used as the default value in most places, we should
+        %% not error out because of that.
+        true;
+    (Name) ->
+        vmq_schema_util:file_is_readable(Name)
+end}.
+{validator, "file-is-pem", "file is not PEM-encoded with one or more entries", fun
+    ("") ->
+        %% "" is used as the default value in most places, we should
+        %% not error out because of that.
+        true;
+    (Name) ->
+        vmq_schema_util:file_is_pem_content(Name)
+end}.

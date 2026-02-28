@@ -4,16 +4,15 @@
 -include_lib("vmq_server/include/vmq_metrics.hrl").
 -include("vmq_webhooks_test.hrl").
 
-
 -export([
-         init_per_suite/1,
-         end_per_suite/1,
-         init_per_group/2,
-         end_per_group/2,
-         init_per_testcase/2,
-         end_per_testcase/2,
-         all/0
-        ]).
+    init_per_suite/1,
+    end_per_suite/1,
+    init_per_group/2,
+    end_per_group/2,
+    init_per_testcase/2,
+    end_per_testcase/2,
+    all/0
+]).
 
 -compile([export_all]).
 -compile([nowarn_export_all]).
@@ -27,14 +26,16 @@ init_per_suite(Config) ->
     {ok, _} = application:ensure_all_started(cowboy),
     cover:start(),
     CertsDir = filename:join([?config(data_dir, Config)]),
-    [{started_apps, StartedApps},
-     {certs_dir, CertsDir}] ++ Config.
+    [
+        {started_apps, StartedApps},
+        {certs_dir, CertsDir}
+    ] ++ Config.
 
 end_per_suite(Config) ->
     vmq_plugin_mgr:disable_plugin(vmq_webhooks),
     application:stop(cowboy),
     application:stop(vmq_server),
-    [ application:stop(App) || App <- proplists:get_value(started_apps, Config, []) ],
+    [application:stop(App) || App <- proplists:get_value(started_apps, Config, [])],
     Config.
 
 init_per_group(http, Config) ->
@@ -59,69 +60,69 @@ end_per_testcase(_, Config) ->
 
 all() ->
     [
-     {group, http},
-     {group, https}
+        {group, http},
+        {group, https}
     ].
 
 groups() ->
     [
-     {http, http()},
-     {https, https()}
+        {http, http()},
+        {https, https()}
     ].
 
 http() ->
     [
-     auth_on_register_m5_test,
-     auth_on_publish_m5_test,
-     auth_on_publish_m5_no_payload_test,
-     auth_on_publish_m5_modify_props_test,
-     auth_on_subscribe_m5_test,
-     on_register_m5_test,
-     on_publish_m5_test,
-     on_subscribe_m5_test,
-     on_unsubscribe_m5_test,
-     on_deliver_m5_test,
-     on_deliver_m5_modify_props_test,
-     on_auth_m5_test,
+        auth_on_register_m5_test,
+        auth_on_publish_m5_test,
+        auth_on_publish_m5_no_payload_test,
+        auth_on_publish_m5_modify_props_test,
+        auth_on_subscribe_m5_test,
+        on_register_m5_test,
+        on_publish_m5_test,
+        on_subscribe_m5_test,
+        on_unsubscribe_m5_test,
+        on_deliver_m5_test,
+        on_deliver_m5_modify_props_test,
+        on_auth_m5_test,
 
-
-     auth_on_register_test,
-     auth_on_register_opts_test,
-     auth_on_publish_test,
-     auth_on_publish_no_payload_test,
-     auth_on_subscribe_test,
-     on_register_test,
-     on_publish_test,
-     on_subscribe_test,
-     on_unsubscribe_test,
-     on_deliver_test,
-     on_offline_message_test,
-     on_client_wakeup_test,
-     on_client_offline_test,
-     on_client_gone_test,
-     on_session_expired_test,
-     base64payload_test,
-     auth_on_register_undefined_creds_test,
-     cache_auth_on_register,
-     cache_auth_on_register_m5,
-     cache_auth_on_publish,
-     cache_auth_on_publish_m5,
-     cache_auth_on_subscribe,
-     cache_auth_on_subscribe_m5,
-     cache_expired_entry,
-     cli_allow_query_parameters_test,
-     metrics_test
+        auth_on_register_test,
+        auth_on_register_opts_test,
+        auth_on_publish_test,
+        auth_on_publish_no_payload_test,
+        auth_on_subscribe_test,
+        on_register_test,
+        on_publish_test,
+        on_subscribe_test,
+        on_unsubscribe_test,
+        on_deliver_test,
+        on_offline_message_test,
+        on_client_wakeup_test,
+        on_client_offline_test,
+        on_client_gone_test,
+        on_session_expired_test,
+        base64payload_test,
+        auth_on_register_undefined_creds_test,
+        cache_auth_on_register,
+        cache_auth_on_register_m5,
+        cache_auth_on_publish,
+        cache_auth_on_publish_m5,
+        cache_auth_on_subscribe,
+        cache_auth_on_subscribe_m5,
+        cache_expired_entry,
+        cli_allow_query_parameters_test,
+        metrics_test,
+        async_overflow_test
     ].
 
 https() ->
     [
-     https_ca_test,
-     https_wrong_ca_test,
-     https_client_cert_test,
-     https_missing_client_cert_fail_test,
-     https_expired_server_cert_test,
-     https_fails_with_no_crl_test,
-     https_bad_server_cn_test
+        https_ca_test,
+        https_wrong_ca_test,
+        https_client_cert_test,
+        https_missing_client_cert_fail_test,
+        https_expired_server_cert_test,
+        https_fails_with_no_crl_test,
+        https_bad_server_cn_test
     ].
 
 start_endpoint_clear() ->
@@ -132,327 +133,503 @@ cache_expired_entry(_) ->
     Endpoint = ?ENDPOINT ++ "/cache1s",
     Self = pid_to_bin(self()),
     register_hook(auth_on_register, Endpoint),
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]
+    ),
     exp_response(cache_auth_on_register_ok),
     %% wait until the entry was expired
     timer:sleep(1100),
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]
+    ),
     exp_response(cache_auth_on_register_ok),
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]
+    ),
     exp_response(cache_auth_on_register_ok),
     ok = exp_nothing(200),
-    #{{entries,<<"http://localhost:34567/cache1s">>,
-       auth_on_register} := 1,
-      {hits,<<"http://localhost:34567/cache1s">>,
-       auth_on_register} := 1,
-      {misses,<<"http://localhost:34567/cache1s">>,
-       auth_on_register} := 2} = vmq_webhooks_cache:stats(),
+    #{
+        {entries, <<"http://localhost:34567/cache1s">>, auth_on_register} := 1,
+        {hits, <<"http://localhost:34567/cache1s">>, auth_on_register} := 1,
+        {misses, <<"http://localhost:34567/cache1s">>, auth_on_register} := 2
+    } = vmq_webhooks_cache:stats(),
     deregister_hook(auth_on_register, Endpoint).
 
 cache_auth_on_register(_) ->
     Endpoint = ?ENDPOINT ++ "/cache",
     Self = pid_to_bin(self()),
     register_hook(auth_on_register, Endpoint),
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]
+    ),
     exp_response(cache_auth_on_register_ok),
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true]
+    ),
     ok = exp_nothing(200),
-    #{{entries,<<"http://localhost:34567/cache">>,
-       auth_on_register} := 1,
-      {hits,<<"http://localhost:34567/cache">>,
-       auth_on_register} := 1,
-      {misses,<<"http://localhost:34567/cache">>,
-       auth_on_register} := 1} = vmq_webhooks_cache:stats(),
+    #{
+        {entries, <<"http://localhost:34567/cache">>, auth_on_register} := 1,
+        {hits, <<"http://localhost:34567/cache">>, auth_on_register} := 1,
+        {misses, <<"http://localhost:34567/cache">>, auth_on_register} := 1
+    } = vmq_webhooks_cache:stats(),
     deregister_hook(auth_on_register, Endpoint).
 
 cache_auth_on_register_m5(_) ->
     Endpoint = ?ENDPOINT ++ "/cache",
     Self = pid_to_bin(self()),
     register_hook(auth_on_register_m5, Endpoint),
-    ok = vmq_plugin:all_till_ok(auth_on_register_m5,
-                                       [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true, #{} ]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register_m5,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true, #{}]
+    ),
     exp_response(cache_auth_on_register_m5_ok),
-    ok = vmq_plugin:all_till_ok(auth_on_register_m5,
-                                       [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true, #{} ]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register_m5,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self, ?PASSWORD, true, #{}]
+    ),
     ok = exp_nothing(200),
-    #{{entries,<<"http://localhost:34567/cache">>,
-        auth_on_register_m5} := 1,
-    {hits,<<"http://localhost:34567/cache">>,
-        auth_on_register_m5} := 1,
-    {misses,<<"http://localhost:34567/cache">>,
-        auth_on_register_m5} := 1} = vmq_webhooks_cache:stats(),
+    #{
+        {entries, <<"http://localhost:34567/cache">>, auth_on_register_m5} := 1,
+        {hits, <<"http://localhost:34567/cache">>, auth_on_register_m5} := 1,
+        {misses, <<"http://localhost:34567/cache">>, auth_on_register_m5} := 1
+    } = vmq_webhooks_cache:stats(),
     deregister_hook(auth_on_register_m5, Endpoint).
-    
+
 cache_auth_on_publish(_) ->
     Endpoint = ?ENDPOINT ++ "/cache",
     Self = pid_to_bin(self()),
     register_hook(auth_on_publish, Endpoint),
-    ok = vmq_plugin:all_till_ok(auth_on_publish,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
     exp_response(cache_auth_on_publish_ok),
-    ok = vmq_plugin:all_till_ok(auth_on_publish,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
     ok = exp_nothing(200),
-    #{{entries,<<"http://localhost:34567/cache">>,
-       auth_on_publish} := 1,
-      {hits,<<"http://localhost:34567/cache">>,
-       auth_on_publish} := 1,
-      {misses,<<"http://localhost:34567/cache">>,
-       auth_on_publish} := 1} = vmq_webhooks_cache:stats(),
+    #{
+        {entries, <<"http://localhost:34567/cache">>, auth_on_publish} := 1,
+        {hits, <<"http://localhost:34567/cache">>, auth_on_publish} := 1,
+        {misses, <<"http://localhost:34567/cache">>, auth_on_publish} := 1
+    } = vmq_webhooks_cache:stats(),
     deregister_hook(auth_on_publish, Endpoint).
 
 cache_auth_on_publish_m5(_) ->
     Endpoint = ?ENDPOINT ++ "/cache",
     Self = pid_to_bin(self()),
     register_hook(auth_on_publish_m5, Endpoint),
-    ok = vmq_plugin:all_till_ok(auth_on_publish_m5,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_publish_m5,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
     exp_response(auth_on_publish_m5_ok),
-    ok = vmq_plugin:all_till_ok(auth_on_publish_m5,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_publish_m5,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
     ok = exp_nothing(200),
-    #{{entries,<<"http://localhost:34567/cache">>,
-        auth_on_publish_m5} := 1,
-        {hits,<<"http://localhost:34567/cache">>,
-        auth_on_publish_m5} := 1,
-        {misses,<<"http://localhost:34567/cache">>,
-        auth_on_publish_m5} := 1} = vmq_webhooks_cache:stats(),
+    #{
+        {entries, <<"http://localhost:34567/cache">>, auth_on_publish_m5} := 1,
+        {hits, <<"http://localhost:34567/cache">>, auth_on_publish_m5} := 1,
+        {misses, <<"http://localhost:34567/cache">>, auth_on_publish_m5} := 1
+    } = vmq_webhooks_cache:stats(),
     deregister_hook(auth_on_publish_m5, Endpoint).
-    
+
 cache_auth_on_subscribe(_) ->
     Endpoint = ?ENDPOINT ++ "/cache",
     Self = pid_to_bin(self()),
     register_hook(auth_on_subscribe, Endpoint),
-    ok = vmq_plugin:all_till_ok(auth_on_subscribe,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_subscribe,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]
+    ),
     exp_response(cache_auth_on_subscribe_ok),
-    ok = vmq_plugin:all_till_ok(auth_on_subscribe,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_subscribe,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]
+    ),
     ok = exp_nothing(200),
-    #{{entries,<<"http://localhost:34567/cache">>,
-       auth_on_subscribe} := 1,
-      {hits,<<"http://localhost:34567/cache">>,
-       auth_on_subscribe} := 1,
-      {misses,<<"http://localhost:34567/cache">>,
-       auth_on_subscribe} := 1} = vmq_webhooks_cache:stats(),
+    #{
+        {entries, <<"http://localhost:34567/cache">>, auth_on_subscribe} := 1,
+        {hits, <<"http://localhost:34567/cache">>, auth_on_subscribe} := 1,
+        {misses, <<"http://localhost:34567/cache">>, auth_on_subscribe} := 1
+    } = vmq_webhooks_cache:stats(),
     deregister_hook(auth_on_subscribe, Endpoint).
 
 cache_auth_on_subscribe_m5(_) ->
     Endpoint = ?ENDPOINT ++ "/cache",
     Self = pid_to_bin(self()),
     register_hook(auth_on_subscribe_m5, Endpoint),
-    ok = vmq_plugin:all_till_ok(auth_on_subscribe_m5,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
-                       [{?TOPIC, {1,#{no_local => false,rap => false,
-                                      retain_handling => send_retain}}}],
-                       #{?P_USER_PROPERTY =>
-                             [{<<"k1">>, <<"v1">>}],
-                         ?P_SUBSCRIPTION_ID => [1,2,3]}]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_subscribe_m5,
+        [
+            Self,
+            {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+            [
+                {?TOPIC,
+                    {1, #{
+                        no_local => false,
+                        rap => false,
+                        retain_handling => send_retain
+                    }}}
+            ],
+            #{
+                ?P_USER_PROPERTY =>
+                    [{<<"k1">>, <<"v1">>}],
+                ?P_SUBSCRIPTION_ID => [1, 2, 3]
+            }
+        ]
+    ),
     exp_response(cache_auth_on_subscribe_m5_ok),
-    ok = vmq_plugin:all_till_ok(auth_on_subscribe_m5,
-                      [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
-                       [{?TOPIC, {1,#{no_local => false,rap => false,
-                                      retain_handling => send_retain}}}],
-                       #{?P_USER_PROPERTY =>
-                             [{<<"k1">>, <<"v1">>}],
-                         ?P_SUBSCRIPTION_ID => [1,2,3]}]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_subscribe_m5,
+        [
+            Self,
+            {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+            [
+                {?TOPIC,
+                    {1, #{
+                        no_local => false,
+                        rap => false,
+                        retain_handling => send_retain
+                    }}}
+            ],
+            #{
+                ?P_USER_PROPERTY =>
+                    [{<<"k1">>, <<"v1">>}],
+                ?P_SUBSCRIPTION_ID => [1, 2, 3]
+            }
+        ]
+    ),
     ok = exp_nothing(200),
-    #{{entries,<<"http://localhost:34567/cache">>,
-        auth_on_subscribe_m5} := 1,
-        {hits,<<"http://localhost:34567/cache">>,
-        auth_on_subscribe_m5} := 1,
-        {misses,<<"http://localhost:34567/cache">>,
-        auth_on_subscribe_m5} := 1} = vmq_webhooks_cache:stats(),
+    #{
+        {entries, <<"http://localhost:34567/cache">>, auth_on_subscribe_m5} := 1,
+        {hits, <<"http://localhost:34567/cache">>, auth_on_subscribe_m5} := 1,
+        {misses, <<"http://localhost:34567/cache">>, auth_on_subscribe_m5} := 1
+    } = vmq_webhooks_cache:stats(),
     deregister_hook(auth_on_subscribe_m5, Endpoint).
-    
+
 auth_on_register_test(_) ->
     register_hook(auth_on_register, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]),
-    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(auth_on_register,
-                      [?PEER, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]),
-    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(auth_on_register,
-                      [?PEER, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]),
-    {ok, [{subscriber_id,
-           {"mynewmount", <<"changed_client_id">>}}]} = vmq_plugin:all_till_ok(auth_on_register,
-                      [?PEER, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]),
-    {ok, [{username, <<"changed_username">>}]} = vmq_plugin:all_till_ok(auth_on_register,
-                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?CHANGED_USERNAME, ?PASSWORD, true]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]
+    ),
+    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]
+    ),
+    {ok, [{subscriber_id, {"mynewmount", <<"changed_client_id">>}}]} = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true]
+    ),
+    {ok, [{username, <<"changed_username">>}]} = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?CHANGED_USERNAME, ?PASSWORD, true]
+    ),
     deregister_hook(auth_on_register, ?ENDPOINT).
 
 auth_on_register_opts_test(_) ->
     register_hook(auth_on_register, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, ?OPTS]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, ?OPTS]
+    ),
     deregister_hook(auth_on_register, ?ENDPOINT).
 
 auth_on_publish_test(_) ->
     register_hook(auth_on_publish, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(auth_on_publish,
-                      [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
-    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(auth_on_publish,
-                      [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
-    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(auth_on_publish,
-                      [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
-    {ok, [{topic, [<<"rewritten">>, <<"topic">>]}]} = vmq_plugin:all_till_ok(auth_on_publish,
-                      [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
+    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
+    {ok, [{topic, [<<"rewritten">>, <<"topic">>]}]} = vmq_plugin:all_till_ok(
+        auth_on_publish,
+        [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
     deregister_hook(auth_on_publish, ?ENDPOINT).
 
 auth_on_subscribe_test(_) ->
     register_hook(auth_on_subscribe, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(auth_on_subscribe,
-                      [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]),
-    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(auth_on_subscribe,
-                      [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]),
-    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(auth_on_subscribe,
-                      [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, [{?TOPIC, 1}]]),
-    {ok, [{[<<"rewritten">>, <<"topic">>], 2},
-          {[<<"forbidden">>, <<"topic">>], not_allowed}]} = vmq_plugin:all_till_ok(auth_on_subscribe,
-                      [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [{?TOPIC, 1}]]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_subscribe,
+        [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_subscribe,
+        [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, [{?TOPIC, 1}]]
+    ),
+    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(
+        auth_on_subscribe,
+        [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, [{?TOPIC, 1}]]
+    ),
+    {ok, [
+        {[<<"rewritten">>, <<"topic">>], 2},
+        {[<<"forbidden">>, <<"topic">>], not_allowed}
+    ]} = vmq_plugin:all_till_ok(
+        auth_on_subscribe,
+        [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [{?TOPIC, 1}]]
+    ),
     deregister_hook(auth_on_subscribe, ?ENDPOINT).
 
 on_register_test(_) ->
     register_hook(on_register, ?ENDPOINT),
     Self = pid_to_bin(self()),
-    [next] = vmq_plugin:all(on_register,
-                            [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self]),
+    [next] = vmq_plugin:all(
+        on_register,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self]
+    ),
     ok = exp_response(on_register_ok),
     deregister_hook(on_register, ?ENDPOINT).
 
 on_publish_test(_) ->
     register_hook(on_publish, ?ENDPOINT),
     Self = pid_to_bin(self()),
-    [next] = vmq_plugin:all(on_publish,
-                           [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
+    [next] = vmq_plugin:all(
+        on_publish,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
     ok = exp_response(on_publish_ok),
     deregister_hook(on_publish, ?ENDPOINT).
 
 on_subscribe_test(_) ->
     register_hook(on_subscribe, ?ENDPOINT),
     Self = pid_to_bin(self()),
-    [next] = vmq_plugin:all(on_subscribe,
-                            [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, 1},
-                                                                       {?TOPIC, not_allowed}]]),
+    [next] = vmq_plugin:all(
+        on_subscribe,
+        [
+            Self,
+            {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+            [
+                {?TOPIC, 1},
+                {?TOPIC, not_allowed}
+            ]
+        ]
+    ),
     ok = exp_response(on_subscribe_ok),
     deregister_hook(on_subscribe, ?ENDPOINT).
 
 on_unsubscribe_test(_) ->
     register_hook(on_unsubscribe, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(on_unsubscribe,
-                                [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [?TOPIC]]),
-    {ok, [[<<"rewritten">>, <<"topic">>],
-          [<<"anotherrewrittentopic">>]]} = vmq_plugin:all_till_ok(on_unsubscribe,
-                      [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [?TOPIC]]),
+    ok = vmq_plugin:all_till_ok(
+        on_unsubscribe,
+        [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [?TOPIC]]
+    ),
+    {ok, [
+        [<<"rewritten">>, <<"topic">>],
+        [<<"anotherrewrittentopic">>]
+    ]} = vmq_plugin:all_till_ok(
+        on_unsubscribe,
+        [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [?TOPIC]]
+    ),
     deregister_hook(on_unsubscribe, ?ENDPOINT).
 
 on_deliver_test(_) ->
     register_hook(on_deliver, ?ENDPOINT),
     Self = pid_to_bin(self()),
-    ok = vmq_plugin:all_till_ok(on_deliver,
-                                [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
+    ok = vmq_plugin:all_till_ok(
+        on_deliver,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
     ok = exp_response(on_deliver_ok),
     deregister_hook(on_deliver, ?ENDPOINT).
 
 %%%%%%%%%%%%%%%%%%%%%%%%% MQTT 5.0 tests %%%%%%%%%%%%%%%%%%%%%%%%%
 auth_on_register_m5_test(_) ->
     register_hook(auth_on_register_m5, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(auth_on_register_m5,
-                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{} ]),
-    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(auth_on_register_m5,
-                      [?PEER, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{}]),
-    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(auth_on_register_m5,
-                      [?PEER, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{}]),
-    {ok, #{subscriber_id :=
-           {"mynewmount", <<"changed_client_id">>}}} = vmq_plugin:all_till_ok(auth_on_register_m5,
-                      [?PEER, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{}]),
-    {ok, #{username := <<"changed_username">>}} = vmq_plugin:all_till_ok(auth_on_register_m5,
-                      [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?CHANGED_USERNAME, ?PASSWORD, true, #{}]),
-    WantUserProps = [{<<"k1">>, <<"v1">>},
-                     {<<"k1">>, <<"v2">>},
-                     {<<"k2">>, <<"v2">>}],
-    {ok, #{properties := #{?P_USER_PROPERTY := GotUserProps}}}
-        = vmq_plugin:all_till_ok(auth_on_register_m5,
-                      [?PEER, {?MOUNTPOINT, ?WITH_PROPERTIES}, ?USERNAME, ?PASSWORD, true,
-                       #{?P_SESSION_EXPIRY_INTERVAL => 5,
-                         ?P_RECEIVE_MAX => 10,
-                         ?P_TOPIC_ALIAS_MAX => 15,
-                         ?P_REQUEST_RESPONSE_INFO => true,
-                         ?P_REQUEST_PROBLEM_INFO => true,
-                         ?P_USER_PROPERTY => WantUserProps}]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register_m5,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{}]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_register_m5,
+        [?PEER, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{}]
+    ),
+    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(
+        auth_on_register_m5,
+        [?PEER, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{}]
+    ),
+    {ok, #{
+        subscriber_id :=
+            {"mynewmount", <<"changed_client_id">>}
+    }} = vmq_plugin:all_till_ok(
+        auth_on_register_m5,
+        [?PEER, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, ?USERNAME, ?PASSWORD, true, #{}]
+    ),
+    {ok, #{username := <<"changed_username">>}} = vmq_plugin:all_till_ok(
+        auth_on_register_m5,
+        [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, ?CHANGED_USERNAME, ?PASSWORD, true, #{}]
+    ),
+    WantUserProps = [
+        {<<"k1">>, <<"v1">>},
+        {<<"k1">>, <<"v2">>},
+        {<<"k2">>, <<"v2">>}
+    ],
+    {ok, #{properties := #{?P_USER_PROPERTY := GotUserProps}}} =
+        vmq_plugin:all_till_ok(
+            auth_on_register_m5,
+            [
+                ?PEER,
+                {?MOUNTPOINT, ?WITH_PROPERTIES},
+                ?USERNAME,
+                ?PASSWORD,
+                true,
+                #{
+                    ?P_SESSION_EXPIRY_INTERVAL => 5,
+                    ?P_RECEIVE_MAX => 10,
+                    ?P_TOPIC_ALIAS_MAX => 15,
+                    ?P_REQUEST_RESPONSE_INFO => true,
+                    ?P_REQUEST_PROBLEM_INFO => true,
+                    ?P_USER_PROPERTY => WantUserProps
+                }
+            ]
+        ),
     [] = WantUserProps -- GotUserProps,
     deregister_hook(auth_on_register_m5, ?ENDPOINT).
 
-
 auth_on_publish_m5_test(_) ->
     register_hook(auth_on_publish_m5, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(auth_on_publish_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
-    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(auth_on_publish_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
-    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(auth_on_publish_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
-    {ok, #{topic := [<<"rewritten">>, <<"topic">>]}} = vmq_plugin:all_till_ok(auth_on_publish_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_publish_m5,
+        [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_publish_m5,
+        [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
+    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(
+        auth_on_publish_m5,
+        [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
+    {ok, #{topic := [<<"rewritten">>, <<"topic">>]}} = vmq_plugin:all_till_ok(
+        auth_on_publish_m5,
+        [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
     deregister_hook(auth_on_publish_m5, ?ENDPOINT).
 
 auth_on_publish_m5_modify_props_test(_) ->
     register_hook(auth_on_publish_m5, ?ENDPOINT),
-    Args = [?USERNAME, {?MOUNTPOINT, <<"modify_props">>}, 1, ?TOPIC, ?PAYLOAD, false,
-            #{?P_USER_PROPERTY =>
-                  [{<<"k1">>, <<"v1">>},
-                   {<<"k2">>, <<"v2">>}],
-              ?P_CORRELATION_DATA => <<"correlation_data">>,
-              ?P_RESPONSE_TOPIC => [<<"response">>,<<"topic">>],
-              ?P_PAYLOAD_FORMAT_INDICATOR => utf8,
-              ?P_CONTENT_TYPE => <<"content_type">>}],
-    {ok, #{properties :=
-          #{?P_USER_PROPERTY :=
-                [{<<"k1">>, <<"v1">>},
-                 {<<"k2">>, <<"v2">>},
-                 {<<"k3">>, <<"v3">>}],
-            ?P_CORRELATION_DATA := <<"modified_correlation_data">>,
-            ?P_RESPONSE_TOPIC := [<<"modified_responsetopic">>],
-            ?P_PAYLOAD_FORMAT_INDICATOR := undefined,
-            ?P_CONTENT_TYPE := <<"modified_content_type">>}}}
-        = vmq_plugin:all_till_ok(auth_on_publish_m5, Args),
+    Args = [
+        ?USERNAME,
+        {?MOUNTPOINT, <<"modify_props">>},
+        1,
+        ?TOPIC,
+        ?PAYLOAD,
+        false,
+        #{
+            ?P_USER_PROPERTY =>
+                [
+                    {<<"k1">>, <<"v1">>},
+                    {<<"k2">>, <<"v2">>}
+                ],
+            ?P_CORRELATION_DATA => <<"correlation_data">>,
+            ?P_RESPONSE_TOPIC => [<<"response">>, <<"topic">>],
+            ?P_PAYLOAD_FORMAT_INDICATOR => utf8,
+            ?P_CONTENT_TYPE => <<"content_type">>
+        }
+    ],
+    {ok, #{
+        properties :=
+            #{
+                ?P_USER_PROPERTY :=
+                    [
+                        {<<"k1">>, <<"v1">>},
+                        {<<"k2">>, <<"v2">>},
+                        {<<"k3">>, <<"v3">>}
+                    ],
+                ?P_CORRELATION_DATA := <<"modified_correlation_data">>,
+                ?P_RESPONSE_TOPIC := [<<"modified_responsetopic">>],
+                ?P_PAYLOAD_FORMAT_INDICATOR := undefined,
+                ?P_CONTENT_TYPE := <<"modified_content_type">>
+            }
+    }} =
+        vmq_plugin:all_till_ok(auth_on_publish_m5, Args),
     deregister_hook(auth_on_publish_m5, ?ENDPOINT).
 
 auth_on_subscribe_m5_test(_) ->
     register_hook(auth_on_subscribe_m5, ?ENDPOINT),
-    ok = vmq_plugin:all_till_ok(auth_on_subscribe_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
-                       [{?TOPIC, {1,#{no_local => false,rap => false,
-                                      retain_handling => send_retain}}}],
-                       #{?P_USER_PROPERTY =>
-                             [{<<"k1">>, <<"v1">>}],
-                         ?P_SUBSCRIPTION_ID => [1,2,3]}]),
-    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(auth_on_subscribe_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, [{?TOPIC, 1}], #{}]),
-    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(auth_on_subscribe_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, [{?TOPIC, 1}], #{}]),
-    {ok, #{topics := [{[<<"rewritten">>, <<"topic">>], {2, #{no_local := false,
-                                                             rap := false,
-                                                             retain_handling := send_retain}}},
-                      {[<<"forbidden">>, <<"topic">>], 135}]}} = vmq_plugin:all_till_ok(auth_on_subscribe_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [{?TOPIC, 1}], #{}]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_subscribe_m5,
+        [
+            ?USERNAME,
+            {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+            [
+                {?TOPIC,
+                    {1, #{
+                        no_local => false,
+                        rap => false,
+                        retain_handling => send_retain
+                    }}}
+            ],
+            #{
+                ?P_USER_PROPERTY =>
+                    [{<<"k1">>, <<"v1">>}],
+                ?P_SUBSCRIPTION_ID => [1, 2, 3]
+            }
+        ]
+    ),
+    {error, <<"not_allowed">>} = vmq_plugin:all_till_ok(
+        auth_on_subscribe_m5,
+        [?USERNAME, {?MOUNTPOINT, ?NOT_ALLOWED_CLIENT_ID}, [{?TOPIC, 1}], #{}]
+    ),
+    {error, plugin_chain_exhausted} = vmq_plugin:all_till_ok(
+        auth_on_subscribe_m5,
+        [?USERNAME, {?MOUNTPOINT, ?IGNORED_CLIENT_ID}, [{?TOPIC, 1}], #{}]
+    ),
+    {ok, #{
+        topics := [
+            {
+                [<<"rewritten">>, <<"topic">>],
+                {2, #{
+                    no_local := false,
+                    rap := false,
+                    retain_handling := send_retain
+                }}
+            },
+            {[<<"forbidden">>, <<"topic">>], 135}
+        ]
+    }} = vmq_plugin:all_till_ok(
+        auth_on_subscribe_m5,
+        [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [{?TOPIC, 1}], #{}]
+    ),
     deregister_hook(auth_on_subscribe_m5, ?ENDPOINT).
 
 on_register_m5_test(_) ->
     register_hook(on_register_m5, ?ENDPOINT),
     Self = pid_to_bin(self()),
     UserProps = [{<<"k1">>, <<"v1">>}],
-    Args = [?PEER, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, Self,
-                       #{?P_SESSION_EXPIRY_INTERVAL => 5,
-                         ?P_RECEIVE_MAX => 10,
-                         ?P_TOPIC_ALIAS_MAX => 15,
-                         ?P_REQUEST_RESPONSE_INFO => true,
-                         ?P_REQUEST_PROBLEM_INFO => true,
-                         ?P_USER_PROPERTY => UserProps}],
+    Args = [
+        ?PEER,
+        {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+        Self,
+        #{
+            ?P_SESSION_EXPIRY_INTERVAL => 5,
+            ?P_RECEIVE_MAX => 10,
+            ?P_TOPIC_ALIAS_MAX => 15,
+            ?P_REQUEST_RESPONSE_INFO => true,
+            ?P_REQUEST_PROBLEM_INFO => true,
+            ?P_USER_PROPERTY => UserProps
+        }
+    ],
     [next] = vmq_plugin:all(on_register_m5, Args),
     ok = exp_response(on_register_m5_ok),
     deregister_hook(on_register_m5, ?ENDPOINT).
@@ -460,14 +637,25 @@ on_register_m5_test(_) ->
 on_publish_m5_test(_) ->
     register_hook(on_publish_m5, ?ENDPOINT),
     Self = pid_to_bin(self()),
-    Args = [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false,
-            #{?P_USER_PROPERTY =>
-                  [{<<"k1">>, <<"v1">>},
-                   {<<"k2">>, <<"v2">>}],
-              ?P_CORRELATION_DATA => <<"correlation_data">>,
-              ?P_RESPONSE_TOPIC => [<<"response">>,<<"topic">>],
-              ?P_PAYLOAD_FORMAT_INDICATOR => utf8,
-              ?P_CONTENT_TYPE => <<"content_type">>}],
+    Args = [
+        Self,
+        {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+        1,
+        ?TOPIC,
+        ?PAYLOAD,
+        false,
+        #{
+            ?P_USER_PROPERTY =>
+                [
+                    {<<"k1">>, <<"v1">>},
+                    {<<"k2">>, <<"v2">>}
+                ],
+            ?P_CORRELATION_DATA => <<"correlation_data">>,
+            ?P_RESPONSE_TOPIC => [<<"response">>, <<"topic">>],
+            ?P_PAYLOAD_FORMAT_INDICATOR => utf8,
+            ?P_CONTENT_TYPE => <<"content_type">>
+        }
+    ],
     [next] = vmq_plugin:all(on_publish_m5, Args),
     ok = exp_response(on_publish_m5_ok),
     deregister_hook(on_publish_m5, ?ENDPOINT).
@@ -476,69 +664,117 @@ on_subscribe_m5_test(_) ->
     register_hook(on_subscribe_m5, ?ENDPOINT),
     Self = pid_to_bin(self()),
     Args =
-        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [{?TOPIC, {1, #{no_local => false,
-                                                                  rap => false,
-                                                                  retain_handling => send_retain}}},
-                                                   {?TOPIC, not_allowed}],
-         #{?P_USER_PROPERTY =>
-               [{<<"k1">>, <<"v1">>}],
-           ?P_SUBSCRIPTION_ID => [1,2,3]}],
+        [
+            Self,
+            {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+            [
+                {?TOPIC,
+                    {1, #{
+                        no_local => false,
+                        rap => false,
+                        retain_handling => send_retain
+                    }}},
+                {?TOPIC, not_allowed}
+            ],
+            #{
+                ?P_USER_PROPERTY =>
+                    [{<<"k1">>, <<"v1">>}],
+                ?P_SUBSCRIPTION_ID => [1, 2, 3]
+            }
+        ],
     [next] = vmq_plugin:all(on_subscribe_m5, Args),
     ok = exp_response(on_subscribe_m5_ok),
     deregister_hook(on_subscribe_m5, ?ENDPOINT).
 
 on_unsubscribe_m5_test(_) ->
     register_hook(on_unsubscribe_m5, ?ENDPOINT),
-    Args = [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, [?TOPIC],
-            #{?P_USER_PROPERTY =>
-                  [{<<"k1">>, <<"v1">>}]}],
+    Args = [
+        ?USERNAME,
+        {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+        [?TOPIC],
+        #{
+            ?P_USER_PROPERTY =>
+                [{<<"k1">>, <<"v1">>}]
+        }
+    ],
     ok = vmq_plugin:all_till_ok(on_unsubscribe_m5, Args),
-    {ok, #{topics := [[<<"rewritten">>, <<"topic">>]]}} = vmq_plugin:all_till_ok(on_unsubscribe_m5,
-                      [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [?TOPIC], #{}]),
+    {ok, #{topics := [[<<"rewritten">>, <<"topic">>]]}} = vmq_plugin:all_till_ok(
+        on_unsubscribe_m5,
+        [?USERNAME, {?MOUNTPOINT, ?CHANGED_CLIENT_ID}, [?TOPIC], #{}]
+    ),
     deregister_hook(on_unsubscribe_m5, ?ENDPOINT).
 
 on_deliver_m5_test(_) ->
     register_hook(on_deliver_m5, ?ENDPOINT),
     Self = pid_to_bin(self()),
-    ok = vmq_plugin:all_till_ok(on_deliver_m5,
-                                [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
+    ok = vmq_plugin:all_till_ok(
+        on_deliver_m5,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
     ok = exp_response(on_deliver_m5_ok),
     deregister_hook(on_deliver_m5, ?ENDPOINT).
 
 on_deliver_m5_modify_props_test(_) ->
     register_hook(on_deliver_m5, ?ENDPOINT),
     Self = pid_to_bin(self()),
-    Args = [Self, {?MOUNTPOINT, <<"modify_props">>}, 1,  ?TOPIC, ?PAYLOAD, false,
-            #{?P_USER_PROPERTY =>
-                  [{<<"k1">>, <<"v1">>},
-                   {<<"k2">>, <<"v2">>}],
-              ?P_CORRELATION_DATA => <<"correlation_data">>,
-              ?P_RESPONSE_TOPIC => [<<"response">>,<<"topic">>],
-              ?P_PAYLOAD_FORMAT_INDICATOR => utf8,
-              ?P_CONTENT_TYPE => <<"content_type">>}],
-    {ok, #{properties :=
-          #{?P_USER_PROPERTY :=
-                [{<<"k1">>, <<"v1">>},
-                 {<<"k2">>, <<"v2">>},
-                 {<<"k3">>, <<"v3">>}],
-            ?P_CORRELATION_DATA := <<"modified_correlation_data">>,
-            ?P_RESPONSE_TOPIC := [<<"modified_responsetopic">>],
-            ?P_PAYLOAD_FORMAT_INDICATOR := undefined,
-            ?P_CONTENT_TYPE := <<"modified_content_type">>}}}
-        = vmq_plugin:all_till_ok(on_deliver_m5, Args),
+    Args = [
+        Self,
+        {?MOUNTPOINT, <<"modify_props">>},
+        1,
+        ?TOPIC,
+        ?PAYLOAD,
+        false,
+        #{
+            ?P_USER_PROPERTY =>
+                [
+                    {<<"k1">>, <<"v1">>},
+                    {<<"k2">>, <<"v2">>}
+                ],
+            ?P_CORRELATION_DATA => <<"correlation_data">>,
+            ?P_RESPONSE_TOPIC => [<<"response">>, <<"topic">>],
+            ?P_PAYLOAD_FORMAT_INDICATOR => utf8,
+            ?P_CONTENT_TYPE => <<"content_type">>
+        }
+    ],
+    {ok, #{
+        properties :=
+            #{
+                ?P_USER_PROPERTY :=
+                    [
+                        {<<"k1">>, <<"v1">>},
+                        {<<"k2">>, <<"v2">>},
+                        {<<"k3">>, <<"v3">>}
+                    ],
+                ?P_CORRELATION_DATA := <<"modified_correlation_data">>,
+                ?P_RESPONSE_TOPIC := [<<"modified_responsetopic">>],
+                ?P_PAYLOAD_FORMAT_INDICATOR := undefined,
+                ?P_CONTENT_TYPE := <<"modified_content_type">>
+            }
+    }} =
+        vmq_plugin:all_till_ok(on_deliver_m5, Args),
 
     ok = exp_response(on_deliver_m5_ok),
     deregister_hook(on_deliver_m5, ?ENDPOINT).
 
 on_auth_m5_test(_) ->
     register_hook(on_auth_m5, ?ENDPOINT),
-    {ok,
-     #{properties := #{?P_AUTHENTICATION_METHOD := <<"AUTH_METHOD">>,
-                       ?P_AUTHENTICATION_DATA := <<"AUTH_DATA1">>}}}
-        = vmq_plugin:all_till_ok(on_auth_m5,
-                                 [?USERNAME, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
-                                  #{?P_AUTHENTICATION_METHOD => <<"AUTH_METHOD">>,
-                                    ?P_AUTHENTICATION_DATA => <<"AUTH_DATA0">>}]),
+    {ok, #{
+        properties := #{
+            ?P_AUTHENTICATION_METHOD := <<"AUTH_METHOD">>,
+            ?P_AUTHENTICATION_DATA := <<"AUTH_DATA1">>
+        }
+    }} =
+        vmq_plugin:all_till_ok(
+            on_auth_m5,
+            [
+                ?USERNAME,
+                {?MOUNTPOINT, ?ALLOWED_CLIENT_ID},
+                #{
+                    ?P_AUTHENTICATION_METHOD => <<"AUTH_METHOD">>,
+                    ?P_AUTHENTICATION_DATA => <<"AUTH_DATA0">>
+                }
+            ]
+        ),
     deregister_hook(on_auth_m5, ?ENDPOINT).
 
 on_offline_message_test(_) ->
@@ -577,37 +813,60 @@ on_session_expired_test(_) ->
     deregister_hook(on_session_expired, ?ENDPOINT).
 
 base64payload_test(_) ->
-    ok = clique:run(["vmq-admin", "webhooks", "register",
-                     "hook=auth_on_publish", "endpoint=" ++ ?ENDPOINT, "--base64payload=true"]),
+    ok = clique:run([
+        "vmq-admin",
+        "webhooks",
+        "register",
+        "hook=auth_on_publish",
+        "endpoint=" ++ ?ENDPOINT,
+        "--base64payload=true"
+    ]),
     {ok, [{payload, ?PAYLOAD}]} =
         vmq_plugin:all_till_ok(
-          auth_on_publish,
-          [?USERNAME, {?MOUNTPOINT, ?BASE64_PAYLOAD_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
+            auth_on_publish,
+            [?USERNAME, {?MOUNTPOINT, ?BASE64_PAYLOAD_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+        ),
     deregister_hook(auth_on_publish, ?ENDPOINT).
 
-
 auth_on_publish_no_payload_test(_) ->
-    ok = clique:run(["vmq-admin", "webhooks", "register",
-                     "hook=auth_on_publish", "endpoint=" ++ ?ENDPOINT, "--no_payload=true", "--base64payload=true"]),
+    ok = clique:run([
+        "vmq-admin",
+        "webhooks",
+        "register",
+        "hook=auth_on_publish",
+        "endpoint=" ++ ?ENDPOINT,
+        "--no_payload=true",
+        "--base64payload=true"
+    ]),
     ok = vmq_plugin:all_till_ok(
-          auth_on_publish,
-          [?USERNAME, {?MOUNTPOINT, ?NO_PAYLOAD_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]),
+        auth_on_publish,
+        [?USERNAME, {?MOUNTPOINT, ?NO_PAYLOAD_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
     deregister_hook(auth_on_publish, ?ENDPOINT).
 
 auth_on_publish_m5_no_payload_test(_) ->
-    ok = clique:run(["vmq-admin", "webhooks", "register",
-                     "hook=auth_on_publish_m5", "endpoint=" ++ ?ENDPOINT, "--no_payload=true"]),
+    ok = clique:run([
+        "vmq-admin",
+        "webhooks",
+        "register",
+        "hook=auth_on_publish_m5",
+        "endpoint=" ++ ?ENDPOINT,
+        "--no_payload=true"
+    ]),
     ok = vmq_plugin:all_till_ok(
-          auth_on_publish_m5,
-          [?USERNAME, {?MOUNTPOINT, ?NO_PAYLOAD_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
+        auth_on_publish_m5,
+        [?USERNAME, {?MOUNTPOINT, ?NO_PAYLOAD_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
     deregister_hook(auth_on_publish_m5, ?ENDPOINT).
 
 auth_on_register_undefined_creds_test(_) ->
     register_hook(auth_on_register, ?ENDPOINT),
     Username = undefined,
     Password = undefined,
-    ok = vmq_plugin:all_till_ok(auth_on_register,
-                      [?PEER, {?MOUNTPOINT, <<"undefined_creds">>}, Username, Password, true]),
+    ok = vmq_plugin:all_till_ok(
+        auth_on_register,
+        [?PEER, {?MOUNTPOINT, <<"undefined_creds">>}, Username, Password, true]
+    ),
     deregister_hook(auth_on_register, ?ENDPOINT).
 
 %% Test for https://github.com/vernemq/vernemq/issues/740
@@ -624,6 +883,11 @@ metrics_test(_) ->
     Self = pid_to_bin(self()),
     [next] = vmq_plugin:all(on_session_expired, [{?MOUNTPOINT, Self}]),
     ok = exp_response(on_session_expired_ok),
+    %% Wait for async webhook worker to finish processing the response
+    %% and update metrics. The exp_response above confirms the handler
+    %% received the request, but the spawned worker may still be
+    %% processing the HTTP response and incrementing counters.
+    ok = wait_async_complete(),
     EndReqCntr = find_metric_value(webhooks_on_session_expired_requests),
     EndErrCntr = find_metric_value(webhooks_on_session_expired_errors),
     EndSentBytesCntr = find_metric_value(webhooks_on_session_expired_bytes_sent),
@@ -633,11 +897,38 @@ metrics_test(_) ->
     {ok, [{text, _Text}]} = vmq_server_cmd:metrics(),
     deregister_hook(on_session_expired, ?ENDPOINT).
 
+async_overflow_test(_) ->
+    %% Set async_pool_size to 0 so all fire-and-forget notifications
+    %% are dropped immediately due to backpressure.
+    OldVal = application:get_env(vmq_webhooks, async_pool_size, 100),
+    application:set_env(vmq_webhooks, async_pool_size, 0),
+    register_hook(on_publish, ?ENDPOINT),
+    Self = pid_to_bin(self()),
+    StartErrCntr = find_metric_value(webhooks_on_publish_errors),
+    [next] = vmq_plugin:all(
+        on_publish,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false]
+    ),
+    %% The notification should have been dropped; webhook handler
+    %% should NOT have received any request.
+    ok = exp_nothing(200),
+    %% The error counter must have been incremented for the drop.
+    EndErrCntr = find_metric_value(webhooks_on_publish_errors),
+    1 = EndErrCntr - StartErrCntr,
+    %% In-flight counter should be back to 0 (nothing was spawned).
+    Ref = persistent_term:get(vmq_webhooks_async_inflight),
+    0 = atomics:get(Ref, 1),
+    application:set_env(vmq_webhooks, async_pool_size, OldVal),
+    deregister_hook(on_publish, ?ENDPOINT).
+
 find_metric_value(Id) ->
     Metrics = vmq_metrics:metrics(),
-    {value, {_MetricDef, Value}} = lists:search(fun({Metric, _V}) ->
-        Metric#metric_def.id =:= Id
-    end, Metrics),
+    {value, {_MetricDef, Value}} = lists:search(
+        fun({Metric, _V}) ->
+            Metric#metric_def.id =:= Id
+        end,
+        Metrics
+    ),
     Value.
 
 %% HTTPS Tests
@@ -652,23 +943,31 @@ https_wrong_ca_test(Config) ->
 
 %% Given a server (endpoint) certificate that has expired, the webhook fails
 https_expired_server_cert_test(Config) ->
-    should_fail(Config,
-                #{certfile => cert_path(Config, "server-expired.crt")},
-                #{cafile => cert_path(Config, "all-ca.crt")}).
+    should_fail(
+        Config,
+        #{certfile => cert_path(Config, "server-expired.crt")},
+        #{cafile => cert_path(Config, "all-ca.crt")}
+    ).
 
 %% Given a valid server (endpoint) certificate with a CN that does not match its hostname, the webhook fails
 https_bad_server_cn_test(Config) ->
-    should_fail(Config,
-                #{certfile => cert_path(Config, "bad-cn-server.crt"),
-                  keyfile => cert_path(Config, "bad-cn-server.key")},
-                #{cafile => cert_path(Config, "all-ca.crt")}).
+    should_fail(
+        Config,
+        #{
+            certfile => cert_path(Config, "bad-cn-server.crt"),
+            keyfile => cert_path(Config, "bad-cn-server.key")
+        },
+        #{cafile => cert_path(Config, "all-ca.crt")}
+    ).
 
 %% Authenticating to an endpoint with a client TLS certificate and the webhook works
 https_client_cert_test(Config) ->
     ServerOpts = #{verify => verify_peer, fail_if_no_peer_cert => true},
-    ClientOpts = #{cafile => cert_path(Config, "all-ca.crt"),
-                   keyfile => cert_path(Config, "client.key"),
-                   certfile => cert_path(Config, "client.crt")},
+    ClientOpts = #{
+        cafile => cert_path(Config, "all-ca.crt"),
+        keyfile => cert_path(Config, "client.key"),
+        certfile => cert_path(Config, "client.crt")
+    },
     should_succeed(Config, ServerOpts, ClientOpts).
 
 %% Failing to provide a client certificate when required by the endpoint makes the webhook fail
@@ -691,8 +990,10 @@ base_https_test(Config, ServerOpts, ClientSSLEnv) ->
     set_ssl_app_env(ClientSSLEnv),
     register_hook(on_deliver, ?HTTPS_ENDPOINT),
     Self = pid_to_bin(self()),
-    _ = vmq_plugin:all_till_ok(on_deliver,
-                                [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]),
+    _ = vmq_plugin:all_till_ok(
+        on_deliver,
+        [Self, {?MOUNTPOINT, ?ALLOWED_CLIENT_ID}, 1, ?TOPIC, ?PAYLOAD, false, #{}]
+    ),
     ExpResponse = exp_response(on_deliver_ok),
     clear_ssl_app_env(),
     deregister_hook(on_deliver, ?HTTPS_ENDPOINT),
@@ -706,7 +1007,7 @@ base_https_test(Config, ServerOpts, ClientSSLEnv) ->
 %% If a test fails, we don't want subsequent tests
 %% failing because the handler is already started.
 start_endpoint_tls(Opts) ->
-   % webhooks_handler:stop_endpoint_tls(),
+    % webhooks_handler:stop_endpoint_tls(),
     webhooks_handler:start_endpoint_tls(Opts).
 
 https_port(Config) -> ?config(https_port, Config).
@@ -716,22 +1017,26 @@ default_https_server_opts(Config) ->
     default_https_server_opts(Config, #{}).
 
 default_https_server_opts(Config, Opts) ->
-    Defaults = #{port => ?HTTPS_PORT,
-                 keyfile => cert_path(Config, "server.key"),
-                 certfile => cert_path(Config, "server.crt"),
-                 cacertfile => cert_path(Config, "all-ca.crt")},
+    Defaults = #{
+        port => ?HTTPS_PORT,
+        keyfile => cert_path(Config, "server.key"),
+        certfile => cert_path(Config, "server.crt"),
+        cacertfile => cert_path(Config, "all-ca.crt")
+    },
     maps:merge(Defaults, Opts).
 
 set_ssl_app_env(Opts) ->
-    Defaults = #{use_crls => false,
-                 tls_version => 'tlsv1.2',
-                 depth => 100},
+    Defaults = #{
+        use_crls => false,
+        tls_version => 'tlsv1.2',
+        depth => 100
+    },
     SSLEnv = maps:merge(Defaults, Opts),
-    maps:map(fun (K,V) -> application:set_env(vmq_webhooks, K, V) end, SSLEnv).
+    maps:map(fun(K, V) -> application:set_env(vmq_webhooks, K, V) end, SSLEnv).
 
 clear_ssl_app_env() ->
     Keys = [cafile, certfile, keyfile, password, depth, tls_version],
-    [application:unset_env(vmq_webhooks, Key)|| Key <- Keys].
+    [application:unset_env(vmq_webhooks, Key) || Key <- Keys].
 
 cert_path(Config, Filename) ->
     CertsDir = ?config(certs_dir, Config),
@@ -740,12 +1045,23 @@ cert_path(Config, Filename) ->
     FullCertPath.
 
 register_hook(Hook, Endpoint) ->
-    ok = clique:run(["vmq-admin", "webhooks", "register",
-                     "hook=" ++ atom_to_list(Hook), "endpoint=" ++ Endpoint, "--base64payload=false"]).
+    ok = clique:run([
+        "vmq-admin",
+        "webhooks",
+        "register",
+        "hook=" ++ atom_to_list(Hook),
+        "endpoint=" ++ Endpoint,
+        "--base64payload=false"
+    ]).
 
 deregister_hook(Hook, Endpoint) ->
-    ok = clique:run(["vmq-admin", "webhooks", "deregister",
-                     "hook=" ++ atom_to_list(Hook), "endpoint=" ++ Endpoint]),
+    ok = clique:run([
+        "vmq-admin",
+        "webhooks",
+        "deregister",
+        "hook=" ++ atom_to_list(Hook),
+        "endpoint=" ++ Endpoint
+    ]),
     [] = vmq_webhooks_plugin:all_hooks().
 
 pid_to_bin(Pid) ->
@@ -755,16 +1071,29 @@ exp_response(Exp) ->
     receive
         Exp -> ok;
         Got -> {received, Got, expected, Exp}
-    after
-        1000 ->
-            {didnt_receive_response, Exp}
+    after 1000 ->
+        {didnt_receive_response, Exp}
     end.
 
 exp_nothing(Timeout) ->
     receive
         Got ->
             {received, Got, expected, nothing}
-    after
-        Timeout ->
-            ok
+    after Timeout ->
+        ok
+    end.
+
+wait_async_complete() ->
+    Ref = persistent_term:get(vmq_webhooks_async_inflight),
+    wait_async_complete(Ref, 50).
+
+wait_async_complete(_Ref, 0) ->
+    timeout;
+wait_async_complete(Ref, N) ->
+    case atomics:get(Ref, 1) of
+        0 ->
+            ok;
+        _ ->
+            timer:sleep(10),
+            wait_async_complete(Ref, N - 1)
     end.

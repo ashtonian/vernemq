@@ -151,6 +151,7 @@ init([]) ->
     ok = vmq_webhooks_cache:new(),
     vmq_webhooks_metrics:init(),
     cache_hook_binaries(),
+    init_async_inflight(),
     schedule_cache_sweep(),
     {ok, #state{}}.
 
@@ -272,6 +273,7 @@ terminate(_Reason, _State) ->
         UniqueEndpoints
     ),
     persistent_term:erase(vmq_webhooks_hook_bins),
+    persistent_term:erase(vmq_webhooks_async_inflight),
     ok.
 
 %%--------------------------------------------------------------------
@@ -336,6 +338,37 @@ refresh_ssl_cache() ->
      || {_Hook, Endpoints} <- all_hooks(), {EP, _Opts} <- Endpoints
     ]),
     lists:foreach(fun cache_ssl_options/1, AllEndpoints).
+
+init_async_inflight() ->
+    Ref = atomics:new(1, [{signed, true}]),
+    persistent_term:put(vmq_webhooks_async_inflight, Ref).
+
+async_call_endpoint(Endpoint, EOpts, HookName, Args) ->
+    Ref = persistent_term:get(vmq_webhooks_async_inflight),
+    MaxWorkers = application:get_env(vmq_webhooks, async_pool_size, 100),
+    case atomics:add_get(Ref, 1, 1) of
+        N when N > MaxWorkers ->
+            atomics:sub(Ref, 1, 1),
+            vmq_webhooks_metrics:incr(HookName, errors),
+            ?LOG_WARNING(
+                "webhook async pool exhausted (~p/~p), dropping ~p notification",
+                [N - 1, MaxWorkers, HookName]
+            );
+        _ ->
+            spawn(fun() ->
+                try
+                    _ = call_endpoint(Endpoint, EOpts, HookName, Args)
+                catch
+                    Class:Reason:Stack ->
+                        ?LOG_ERROR(
+                            "async webhook ~p crashed: ~p:~p~n~p",
+                            [HookName, Class, Reason, Stack]
+                        )
+                after
+                    atomics:sub(Ref, 1, 1)
+                end
+            end)
+    end.
 
 %%%===================================================================
 %%% Hook functions
@@ -855,7 +888,7 @@ all(HookName, Args) ->
 ) ->
     'next'.
 all([{Endpoint, EOpts} | Rest], HookName, Args) ->
-    _ = call_endpoint(Endpoint, EOpts, HookName, Args),
+    async_call_endpoint(Endpoint, EOpts, HookName, Args),
     all(Rest, HookName, Args);
 all([], _, _) ->
     next.

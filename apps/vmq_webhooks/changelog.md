@@ -10,6 +10,11 @@
    refreshed on each cache sweep cycle.
  - Pre-compute hook name binaries at startup to avoid per-request
    `atom_to_binary/2` allocations in the HTTP header path.
+ - Dispatch fire-and-forget notification webhooks (`on_publish`,
+   `on_register`, `on_subscribe`, `on_offline_message`, `on_client_*`,
+   `on_session_expired`) asynchronously so they no longer block the
+   calling FSM process. Bounded by `vmq_webhooks.async_pool_size`
+   (default: 100); excess notifications are dropped with a warning.
  - Collect per webhook type (e.g. `on_publish_m5_requests`) metrics.
  - Move persistence of webhooks to the `vernemq.conf` main file. This means
    adding hooks using the `vmq-admin` tool no longer persists the webhooks and
