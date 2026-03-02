@@ -21,6 +21,7 @@
 -export([
     start_link/1,
     publish/2,
+    publish_async/2,
     enqueue/4,
     enqueue_async/3,
     connect_params/1,
@@ -71,6 +72,10 @@ publish(Pid, Msg) ->
         {'DOWN', MRef, process, Pid, Reason} ->
             {error, Reason}
     end.
+
+publish_async(Pid, Msg) ->
+    Pid ! {msg_async, Msg},
+    ok.
 
 enqueue(Pid, Term, BufferIfUnreachable, Timeout) ->
     Ref = make_ref(),
@@ -207,6 +212,12 @@ handle_message({msg, CallerPid, Ref, Msg}, State) ->
         false ->
             CallerPid ! {Ref, ok}
     end,
+    NewState;
+handle_message({msg_async, Msg}, State) ->
+    Bin = term_to_binary(Msg),
+    L = byte_size(Bin),
+    BinMsg = <<"msg", L:32, Bin/binary>>,
+    {_Dropped, NewState} = buffer_message(BinMsg, State),
     NewState;
 handle_message(
     {connect_async_done, AsyncPid, {ok, {Transport, Socket}}},

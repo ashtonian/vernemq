@@ -39,6 +39,7 @@
     if_ready/3,
     netsplit_statistics/0,
     publish/2,
+    publish_async/2,
     remote_enqueue/3,
     remote_enqueue/4,
     remote_enqueue_async/3
@@ -119,6 +120,14 @@ publish(Node, Msg) ->
             {error, not_found};
         {ok, Pid} ->
             vmq_cluster_node:publish(Pid, Msg)
+    end.
+
+publish_async(Node, Msg) ->
+    case vmq_cluster_node_sup:get_cluster_node(Node) of
+        {error, not_found} ->
+            {error, not_found};
+        {ok, Pid} ->
+            vmq_cluster_node:publish_async(Pid, Msg)
     end.
 
 -spec remote_enqueue(node(), Term, BufferIfUnreachable) ->

@@ -529,7 +529,7 @@ publish_fold_fun(
         subscriber_groups = add_to_subscriber_group(Sub, SubscriberGroups, SGPolicy)
     };
 publish_fold_fun(Node, _FromClientId, #publish_fold_acc{msg = Msg, remote_matches = N} = Acc) ->
-    case vmq_cluster:publish(Node, Msg) of
+    case vmq_cluster:publish_async(Node, Msg) of
         ok ->
             Acc#publish_fold_acc{remote_matches = N + 1};
         {error, Reason} ->
