@@ -81,6 +81,7 @@ node_status() ->
     {ok,
         NodeStatus ++
             [
+                {<<"cluster_tier">>, atom_to_binary(vmq_cluster:cluster_tier(), utf8)},
                 {<<"mystatus">>, [
                     [{atom_to_binary(Node, utf8), Status} || {Node, Status} <- vmq_cluster:status()]
                 ]},

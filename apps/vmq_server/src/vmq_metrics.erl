@@ -1642,9 +1642,20 @@ misc_statistics() ->
     ),
     {NetsplitDetectedCount, NetsplitResolvedCount} =
         fetch_external_metric(vmq_cluster, netsplit_statistics, {0, 0}),
+    {DegradedDetectedCount, DegradedResolvedCount} =
+        fetch_external_metric(vmq_cluster, degraded_statistics, {0, 0}),
+    ClusterReadiness =
+        case catch vmq_cluster:cluster_tier() of
+            healthy -> 2;
+            degraded -> 1;
+            _ -> 0
+        end,
     [
         {netsplit_detected, NetsplitDetectedCount},
         {netsplit_resolved, NetsplitResolvedCount},
+        {cluster_degraded_detected, DegradedDetectedCount},
+        {cluster_degraded_resolved, DegradedResolvedCount},
+        {cluster_readiness, ClusterReadiness},
         {router_subscriptions, NrOfSubs},
         {router_memory, SMemory},
         {retain_messages, NrOfRetain},
@@ -1671,6 +1682,27 @@ misc_stats_def() ->
             netsplit_resolved,
             netsplit_resolved,
             <<"The number of resolved netsplits.">>
+        ),
+        m(
+            counter,
+            [],
+            cluster_degraded_detected,
+            cluster_degraded_detected,
+            <<"The number of times the cluster entered degraded state.">>
+        ),
+        m(
+            counter,
+            [],
+            cluster_degraded_resolved,
+            cluster_degraded_resolved,
+            <<"The number of times the cluster left degraded state.">>
+        ),
+        m(
+            gauge,
+            [],
+            cluster_readiness,
+            cluster_readiness,
+            <<"Cluster readiness level: 2=healthy, 1=degraded, 0=partitioned.">>
         ),
         m(
             gauge,

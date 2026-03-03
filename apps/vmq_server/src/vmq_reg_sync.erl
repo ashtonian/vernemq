@@ -18,11 +18,14 @@
 
 %% API
 -export([
-    start_link/0,
+    start_link/1,
     sync/3, sync/4,
     async/3, async/4,
     done/3,
-    status/1, status/2
+    status/1, status/2,
+    sync_node/1,
+    shard_name/1,
+    num_shards/0
 ]).
 
 %% gen_server callbacks
@@ -35,8 +38,6 @@
     code_change/3
 ]).
 
--define(SERVER, ?MODULE).
-
 -record(state, {
     sync_queues = maps:new(),
     running = maps:new()
@@ -46,8 +47,8 @@
 %%% API
 %%%===================================================================
 
-start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+start_link(Id) ->
+    gen_server:start_link({local, shard_name(Id)}, ?MODULE, [], []).
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% vmq_reg_sync:
@@ -70,6 +71,14 @@ start_link() ->
 %% may take place on a different node than the Caller noder, the Fun is, once
 %% dequeued, run on the caller node by adding a child to the Caller local
 %% vmq_reg_action_sync_sup.
+%%
+%% Sharding:
+%% ~~~~~~~~~
+%% Each node runs N shard processes (vmq_reg_sync_0 .. vmq_reg_sync_N-1).
+%% A SyncKey is deterministically mapped to a shard via phash2, so the same
+%% SyncKey always hits the same shard. This eliminates the single-process
+%% bottleneck during reconnection storms while preserving the per-SyncKey
+%% serialization invariant.
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 -spec sync(any(), fun(() -> any()), pos_integer()) ->
@@ -79,7 +88,7 @@ sync(SyncKey, Fun, Timeout) ->
 
 sync(SyncKey, Fun, SyncNode, Timeout) ->
     Owner = self(),
-    call(SyncNode, {sync, Owner, SyncKey, Fun, Timeout}).
+    call(SyncKey, SyncNode, {sync, Owner, SyncKey, Fun, Timeout}).
 
 -spec async(any(), fun(() -> any()), pos_integer()) -> ok | {error, not_ready}.
 async(SyncKey, Fun, Timeout) ->
@@ -87,11 +96,11 @@ async(SyncKey, Fun, Timeout) ->
 
 async(SyncKey, Fun, SyncNode, Timeout) ->
     Owner = self(),
-    call(SyncNode, {async, Owner, SyncKey, Fun, Timeout}).
+    call(SyncKey, SyncNode, {async, Owner, SyncKey, Fun, Timeout}).
 
-call(Node, Req) ->
+call(SyncKey, Node, Req) ->
     try
-        gen_server:call({?SERVER, Node}, Req, infinity)
+        gen_server:call({shard_for_key(SyncKey), Node}, Req, infinity)
     catch
         _:_ ->
             %% mostly happens in case of a netsplit
@@ -99,18 +108,61 @@ call(Node, Req) ->
     end.
 
 done(SyncPid, ActionPid, Reply) ->
-    gen_server:call({?SERVER, node(SyncPid)}, {done, ActionPid, Reply}, infinity).
+    gen_server:call(SyncPid, {done, ActionPid, Reply}, infinity).
 
 status(SyncKey) ->
     status(SyncKey, sync_node(SyncKey)).
 
 status(SyncKey, SyncNode) ->
-    gen_server:call({?SERVER, SyncNode}, {status, SyncKey}).
+    gen_server:call({shard_for_key(SyncKey), SyncNode}, {status, SyncKey}).
 
 sync_node(SyncKey) ->
-    Nodes = vmq_cluster:nodes(),
-    I = erlang:phash2(SyncKey) rem length(Nodes) + 1,
-    lists:nth(I, lists:sort(Nodes)).
+    case ensure_ring() of
+        {error, no_nodes} ->
+            node();
+        Ring ->
+            vmq_consistent_hash:lookup(SyncKey, Ring)
+    end.
+
+%% Shard helpers
+
+shard_name(Id) ->
+    list_to_atom("vmq_reg_sync_" ++ integer_to_list(Id)).
+
+num_shards() ->
+    case persistent_term:get(vmq_reg_sync_num_shards, undefined) of
+        undefined ->
+            N = application:get_env(vmq_server, reg_sync_shards, 8),
+            persistent_term:put(vmq_reg_sync_num_shards, N),
+            N;
+        N ->
+            N
+    end.
+
+shard_for_key(SyncKey) ->
+    shard_name(erlang:phash2(SyncKey, num_shards())).
+
+ensure_ring() ->
+    CurrentNodes = lists:sort(vmq_cluster:nodes()),
+    case persistent_term:get({vmq_consistent_hash, ring}, undefined) of
+        undefined ->
+            rebuild_ring(CurrentNodes);
+        {CachedNodes, Ring} ->
+            case CachedNodes =:= CurrentNodes of
+                true -> Ring;
+                false -> rebuild_ring(CurrentNodes)
+            end
+    end.
+
+rebuild_ring(Nodes) ->
+    case Nodes of
+        [] ->
+            {error, no_nodes};
+        _ ->
+            Ring = vmq_consistent_hash:new(Nodes, 256),
+            persistent_term:put({vmq_consistent_hash, ring}, {Nodes, Ring}),
+            Ring
+    end.
 
 %%%===================================================================
 %%% gen_server callbacks

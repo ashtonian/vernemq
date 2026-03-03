@@ -35,8 +35,7 @@
     parser_state,
     reg_view,
     proto_tag,
-    pending = [],
-    throttled = false,
+    routing_worker,
     bytes_recv = {os:timestamp(), 0}
 }).
 
@@ -56,10 +55,10 @@ init(Ref, Transport, Opts) ->
     MaskedSocket = mask_socket(Transport, Socket),
     %% tune buffer sizes
     CfgBufSizes = proplists:get_value(buffer_sizes, Opts, undefined),
-    HighWatermark = proplists:get_value(high_watermark, Opts, 8192),
-    LowWatermark = proplists:get_value(low_watermark, Opts, 4096),
-    HighMsgQWatermark = proplists:get_value(high_msgq_watermark, Opts, 8192),
-    LowMsgQWatermark = proplists:get_value(low_msgq_watermark, Opts, 4096),
+    HighWatermark = proplists:get_value(high_watermark, Opts, 1048576),
+    LowWatermark = proplists:get_value(low_watermark, Opts, 524288),
+    HighMsgQWatermark = proplists:get_value(high_msgq_watermark, Opts, 1048576),
+    LowMsgQWatermark = proplists:get_value(low_msgq_watermark, Opts, 524288),
     case CfgBufSizes of
         undefined ->
             {ok, BufSizes} = getopts(MaskedSocket, [sndbuf, recbuf, buffer]),
@@ -76,10 +75,12 @@ init(Ref, Transport, Opts) ->
     ]),
     case active_once(MaskedSocket) of
         ok ->
+            RoutingWorker = spawn_link(fun() -> routing_worker_loop(RegView) end),
             loop(#st{
                 socket = MaskedSocket,
                 reg_view = RegView,
-                proto_tag = proto_tag(Transport)
+                proto_tag = proto_tag(Transport),
+                routing_worker = RoutingWorker
             });
         {error, Reason} ->
             exit(Reason)
@@ -96,7 +97,12 @@ loop(#st{} = State) ->
         M ->
             loop(handle_message(M, State))
     end;
-loop({exit, Reason, _State}) ->
+loop({exit, Reason, #st{routing_worker = RoutingWorker}}) ->
+    %% Explicitly shut down the routing worker to prevent process leaks.
+    case RoutingWorker of
+        Pid when is_pid(Pid) -> exit(Pid, shutdown);
+        _ -> ok
+    end,
     case Reason of
         shutdown -> ok;
         normal -> ok;
@@ -156,6 +162,9 @@ handle_message({ProtoClosed, _}, #st{proto_tag = {_, ProtoClosed, _}} = State) -
     {exit, normal, State};
 handle_message({ProtoErr, _, Error}, #st{proto_tag = {_, _, ProtoErr}} = State) ->
     {exit, Error, State};
+handle_message({'EXIT', WorkerPid, Reason}, #st{routing_worker = WorkerPid} = State) ->
+    ?LOG_WARNING("cluster_com routing worker died: ~p", [Reason]),
+    {exit, {routing_worker_died, Reason}, State};
 handle_message({'DOWN', _, process, _ClusterNodePid, Reason}, State) ->
     {exit, Reason, State}.
 
@@ -186,7 +195,7 @@ process(<<"msg", L:32, Bin:L/binary, Rest/binary>>, St) ->
         mountpoint = MP,
         routing_key = Topic
     } = Msg = to_vmq_msg(binary_to_term(Bin)),
-    _ = vmq_reg:route_remote_msg(St#st.reg_view, MP, Topic, Msg),
+    St#st.routing_worker ! {route, MP, Topic, Msg},
     process(Rest, St);
 process(<<"enq", L:32, Bin:L/binary, Rest/binary>>, St) ->
     case binary_to_term(Bin) of
@@ -228,6 +237,30 @@ process(<<>>, _) ->
 process(<<Cmd:3/binary, L:32, _:L/binary, Rest/binary>>, St) ->
     ?LOG_WARNING("unknown message: ~p", [Cmd]),
     process(Rest, St).
+
+routing_worker_loop(RegView) ->
+    process_flag(trap_exit, true),
+    routing_worker_loop_recv(RegView).
+
+routing_worker_loop_recv(RegView) ->
+    receive
+        {route, MP, Topic, Msg} ->
+            try
+                vmq_reg:route_remote_msg(RegView, MP, Topic, Msg)
+            catch
+                Class:Reason ->
+                    ?LOG_WARNING(
+                        "remote msg routing failed ~p:~p for topic ~p",
+                        [Class, Reason, Topic]
+                    )
+            end,
+            routing_worker_loop_recv(RegView);
+        {'EXIT', _Pid, shutdown} ->
+            ok;
+        {'EXIT', _Pid, Reason} ->
+            ?LOG_WARNING("routing worker received EXIT from linked process: ~p", [Reason]),
+            ok
+    end.
 
 to_vmq_msgs(Msgs) ->
     lists:map(

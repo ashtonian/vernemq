@@ -126,11 +126,15 @@ init([]) ->
             ?CHILD(vmq_reg_mgr, vmq_reg_mgr, worker, []),
             ?CHILD(vmq_retain_srv, vmq_retain_srv, worker, []),
             ?CHILD(vmq_reg_sync_action_sup, vmq_reg_sync_action_sup, supervisor, []),
-            ?CHILD(vmq_reg_sync, vmq_reg_sync, worker, [])
+            {vmq_reg_sync_sup, {vmq_reg_sync_sup, start_link, []}, permanent, 5000, supervisor, [vmq_reg_sync_sup]}
         ]}}.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+reg_view_child_spec(vmq_reg_trie) ->
+    {{reg_view, vmq_reg_trie}, {vmq_reg_trie_sup, start_link, []}, permanent, 5000, supervisor, [
+        vmq_reg_trie_sup
+    ]};
 reg_view_child_spec(ViewModule) ->
     ?CHILD({reg_view, ViewModule}, ViewModule, worker, []).

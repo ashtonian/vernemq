@@ -150,6 +150,9 @@ init([]) ->
     ets:new(?TBL, [public, ordered_set, named_table, {read_concurrency, true}]),
     ok = vmq_webhooks_cache:new(),
     vmq_webhooks_metrics:init(),
+    cache_hook_binaries(),
+    init_async_inflight(),
+    schedule_cache_sweep(),
     {ok, #state{}}.
 
 %%--------------------------------------------------------------------
@@ -232,6 +235,17 @@ handle_cast(_Msg, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
+handle_info(sweep_cache, State) ->
+    Purged = vmq_webhooks_cache:purge_expired(),
+    case Purged > 0 of
+        true ->
+            ?LOG_DEBUG("webhook cache sweep purged ~p expired entries", [Purged]);
+        false ->
+            ok
+    end,
+    refresh_ssl_cache(),
+    schedule_cache_sweep(),
+    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -248,8 +262,18 @@ handle_info(_Info, State) ->
 %%--------------------------------------------------------------------
 terminate(_Reason, _State) ->
     {_Hooks, Vals} = lists:unzip(all_hooks()),
-    {Endpoints, _Opts} = lists:unzip(lists:flatten(Vals)),
-    [hackney_pool:stop_pool(E) || {E, _} <- lists:usort(Endpoints)],
+    Pairs = lists:flatten(Vals),
+    {Endpoints, _Opts} = lists:unzip(Pairs),
+    UniqueEndpoints = lists:usort(Endpoints),
+    lists:foreach(
+        fun(E) ->
+            hackney_pool:stop_pool(E),
+            persistent_term:erase({vmq_webhooks_ssl, E})
+        end,
+        UniqueEndpoints
+    ),
+    persistent_term:erase(vmq_webhooks_hook_bins),
+    persistent_term:erase(vmq_webhooks_async_inflight),
     ok.
 
 %%--------------------------------------------------------------------
@@ -262,6 +286,89 @@ terminate(_Reason, _State) ->
 %%--------------------------------------------------------------------
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
+
+%%%===================================================================
+%%% Internal functions
+%%%===================================================================
+schedule_cache_sweep() ->
+    Interval = application:get_env(vmq_webhooks, cache_sweep_interval, 60) * 1000,
+    erlang:send_after(Interval, self(), sweep_cache).
+
+cache_hook_binaries() ->
+    Hooks = [
+        auth_on_register,
+        auth_on_publish,
+        auth_on_subscribe,
+        on_register,
+        on_publish,
+        on_subscribe,
+        on_unsubscribe,
+        on_deliver,
+        on_offline_message,
+        on_client_wakeup,
+        on_client_offline,
+        on_client_gone,
+        on_session_expired,
+        auth_on_register_m5,
+        auth_on_publish_m5,
+        auth_on_subscribe_m5,
+        on_register_m5,
+        on_publish_m5,
+        on_subscribe_m5,
+        on_unsubscribe_m5,
+        on_deliver_m5,
+        on_auth_m5
+    ],
+    HookBins = maps:from_list([{H, atom_to_binary(H, utf8)} || H <- Hooks]),
+    persistent_term:put(vmq_webhooks_hook_bins, HookBins).
+
+cache_ssl_options(Endpoint) ->
+    case Endpoint of
+        <<"https://", _/binary>> ->
+            URL = hackney_url:parse_url(Endpoint),
+            SslOpts = ssl_options(URL#hackney_url.host),
+            persistent_term:put({vmq_webhooks_ssl, Endpoint}, [{ssl_options, SslOpts}]);
+        _ ->
+            persistent_term:put({vmq_webhooks_ssl, Endpoint}, [])
+    end.
+
+refresh_ssl_cache() ->
+    AllEndpoints = lists:usort([
+        EP
+     || {_Hook, Endpoints} <- all_hooks(), {EP, _Opts} <- Endpoints
+    ]),
+    lists:foreach(fun cache_ssl_options/1, AllEndpoints).
+
+init_async_inflight() ->
+    Ref = atomics:new(1, [{signed, true}]),
+    persistent_term:put(vmq_webhooks_async_inflight, Ref).
+
+async_call_endpoint(Endpoint, EOpts, HookName, Args) ->
+    Ref = persistent_term:get(vmq_webhooks_async_inflight),
+    MaxWorkers = application:get_env(vmq_webhooks, async_pool_size, 100),
+    case atomics:add_get(Ref, 1, 1) of
+        N when N > MaxWorkers ->
+            atomics:sub(Ref, 1, 1),
+            vmq_webhooks_metrics:incr(HookName, errors),
+            ?LOG_WARNING(
+                "webhook async pool exhausted (~p/~p), dropping ~p notification",
+                [N - 1, MaxWorkers, HookName]
+            );
+        _ ->
+            spawn(fun() ->
+                try
+                    _ = call_endpoint(Endpoint, EOpts, HookName, Args)
+                catch
+                    Class:Reason:Stack ->
+                        ?LOG_ERROR(
+                            "async webhook ~p crashed: ~p:~p~n~p",
+                            [HookName, Class, Reason, Stack]
+                        )
+                after
+                    atomics:sub(Ref, 1, 1)
+                end
+            end)
+    end.
 
 %%%===================================================================
 %%% Hook functions
@@ -633,7 +740,8 @@ maybe_start_pool(Endpoint) ->
     {ok, PoolTimeout} = application:get_env(vmq_webhooks, pool_timeout),
     {ok, PoolMaxConn} = application:get_env(vmq_webhooks, pool_max_connections),
     Opts = [{timeout, PoolTimeout}, {max_connections, PoolMaxConn}],
-    ok = hackney_pool:start_pool(Endpoint, Opts).
+    ok = hackney_pool:start_pool(Endpoint, Opts),
+    cache_ssl_options(Endpoint).
 
 -spec maybe_stop_pool(_) -> 'ok' | {'error', 'not_found' | 'simple_one_for_one'}.
 maybe_stop_pool(Endpoint) ->
@@ -644,8 +752,11 @@ maybe_stop_pool(Endpoint) ->
         all_hooks()
     ),
     case InUse of
-        [] -> hackney_pool:stop_pool(Endpoint);
-        _ -> ok
+        [] ->
+            hackney_pool:stop_pool(Endpoint),
+            persistent_term:erase({vmq_webhooks_ssl, Endpoint});
+        _ ->
+            ok
     end.
 
 -spec enable_hook(hook_name()) -> 'ok' | {'error', 'no_matching_callback_found'}.
@@ -777,7 +888,7 @@ all(HookName, Args) ->
 ) ->
     'next'.
 all([{Endpoint, EOpts} | Rest], HookName, Args) ->
-    _ = call_endpoint(Endpoint, EOpts, HookName, Args),
+    async_call_endpoint(Endpoint, EOpts, HookName, Args),
     all(Rest, HookName, Args);
 all([], _, _) ->
     next.
@@ -869,12 +980,18 @@ ssl_options(Endpoint) ->
     ]).
 -spec maybe_ssl_opts(binary()) -> proplists:proplist().
 maybe_ssl_opts(Endpoint) ->
-    case Endpoint of
-        <<"https://", _Rest/binary>> ->
-            URL = hackney_url:parse_url(Endpoint),
-            [{ssl_options, ssl_options(URL#hackney_url.host)}];
-        _ ->
-            []
+    try
+        persistent_term:get({vmq_webhooks_ssl, Endpoint})
+    catch
+        error:badarg ->
+            %% Fallback for endpoints not yet cached (e.g., during startup race)
+            case Endpoint of
+                <<"https://", _Rest/binary>> ->
+                    URL = hackney_url:parse_url(Endpoint),
+                    [{ssl_options, ssl_options(URL#hackney_url.host)}];
+                _ ->
+                    []
+            end
     end.
 -spec maybe_call_endpoint(_, _, hook_name(), [{atom(), _}, ...]) -> any().
 maybe_call_endpoint(Endpoint, EOpts, Hook, Args) when
@@ -914,9 +1031,11 @@ maybe_call_endpoint(Endpoint, EOpts, Hook, Args) ->
 ) -> any().
 call_endpoint(Endpoint, EOpts, Hook, Args0) ->
     Method = post,
+    Format = maps:get(payload_format, EOpts, json),
+    HookBin = maps:get(Hook, persistent_term:get(vmq_webhooks_hook_bins)),
     Headers = [
-        {<<"Content-Type">>, <<"application/json">>},
-        {<<"vernemq-hook">>, atom_to_binary(Hook, utf8)}
+        {<<"Content-Type">>, vmq_webhooks_encoder:content_type(Format)},
+        {<<"vernemq-hook">>, HookBin}
     ],
     Opts =
         [
@@ -930,18 +1049,19 @@ call_endpoint(Endpoint, EOpts, Hook, Args0) ->
             {ok, 200, RespHeaders, CRef} ->
                 case hackney:body(CRef) of
                     {ok, Body} ->
-                        case vmq_json:is_json(Body) of
+                        case vmq_webhooks_encoder:is_valid(Format, Body) of
                             true ->
                                 handle_response(
                                     Hook,
                                     parse_headers(RespHeaders),
-                                    vmq_json:decode(Body, [{labels, binary}, {return_maps, false}]),
+                                    vmq_webhooks_encoder:decode(Format, Body),
                                     EOpts
                                 );
                             false ->
-                                {error, received_payload_not_json}
+                                {error, received_payload_not_valid}
                         end;
                     {error, _} = E ->
+                        hackney:close(CRef),
                         E
                 end;
             {ok, Code, _, CRef} ->
@@ -1184,6 +1304,8 @@ retain_handling(Val) ->
     throw({invalid_retain_handling, Val}).
 
 -spec norm_payload([{atom(), _}], map()) -> [any()].
+norm_payload(Mods, #{payload_format := msgpack}) ->
+    Mods;
 norm_payload(Mods, EOpts) ->
     lists:map(
         fun
@@ -1250,7 +1372,8 @@ encode_payload(Hook, Args, Opts) when
             end,
             Args
         ),
-    vmq_json:encode(RemappedKeys);
+    Format = maps:get(payload_format, Opts, json),
+    vmq_webhooks_encoder:encode(Format, RemappedKeys);
 encode_payload(Hook, Args, Opts) when
     Hook =:= auth_on_subscribe; Hook =:= on_subscribe
 ->
@@ -1277,22 +1400,31 @@ encode_payload(Hook, Args, Opts) when
             end,
             Args
         ),
-    vmq_json:encode(RemappedKeys);
+    Format = maps:get(payload_format, Opts, json),
+    vmq_webhooks_encoder:encode(Format, RemappedKeys);
 encode_payload(_, Args, Opts) ->
+    Format = maps:get(payload_format, Opts, json),
     RemappedKeys =
         lists:map(
             fun
-                ({addr, V}) -> {peer_addr, V};
-                ({port, V}) -> {peer_port, V};
-                ({client_id, V}) -> {client_id, V};
-                ({properties, V}) -> {properties, encode_props(V, Opts)};
-                ({payload, V}) -> {payload, b64encode(V, Opts)};
-                (#{client_cert := C} = _V) -> {client_cert, b64encode(C, Opts)};
-                (V) -> V
+                ({addr, V}) ->
+                    {peer_addr, V};
+                ({port, V}) ->
+                    {peer_port, V};
+                ({client_id, V}) ->
+                    {client_id, V};
+                ({properties, V}) ->
+                    {properties, encode_props(V, Opts)};
+                ({payload, V}) ->
+                    {payload, maybe_b64encode_payload(V, Format, Opts)};
+                (#{client_cert := C} = _V) ->
+                    {client_cert, maybe_b64encode_payload(C, Format, Opts)};
+                (V) ->
+                    V
             end,
             Args
         ),
-    vmq_json:encode(RemappedKeys).
+    vmq_webhooks_encoder:encode(Format, RemappedKeys).
 
 -spec encode_props(properties(), map()) -> any().
 encode_props(Props, Opts) when is_map(Props) ->
@@ -1338,6 +1470,10 @@ maybe_b64decode(V, _) -> base64:decode(V).
 -spec b64encode(_, map()) -> any().
 b64encode(V, #{base64_payload := false}) -> V;
 b64encode(V, _) -> base64:encode(V).
+
+-spec maybe_b64encode_payload(_, atom(), map()) -> any().
+maybe_b64encode_payload(V, msgpack, _Opts) -> V;
+maybe_b64encode_payload(V, _, Opts) -> b64encode(V, Opts).
 
 -spec b64decode(_, map()) -> any().
 b64decode(V, #{base64_payload := false}) -> V;

@@ -22,8 +22,10 @@
     start_link/0,
     ensure_cluster_node/1,
     get_cluster_node/1,
+    get_cluster_node/2,
     del_cluster_node/1,
-    node_status/1
+    node_status/1,
+    pool_size/0
 ]).
 
 %% Supervisor callbacks
@@ -45,52 +47,100 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
+pool_size() ->
+    case ets:lookup(vmq_cluster_node_pool, pool_size) of
+        [{pool_size, N}] -> N;
+        [] -> 1
+    end.
+
 ensure_cluster_node(Node) when Node == node() ->
     %% cluster node not needed
     ok;
 ensure_cluster_node(Node) ->
-    case get_cluster_node(Node) of
-        {error, not_found} ->
-            {ok, _} = supervisor:start_child(?MODULE, child_spec(Node)),
-            ok;
-        {ok, _} ->
-            ok
-    end.
+    N = pool_size(),
+    lists:foreach(
+        fun(Idx) ->
+            ChildId = {vmq_cluster_node, Node, Idx},
+            case lists:keyfind(ChildId, 1, supervisor:which_children(?MODULE)) of
+                false ->
+                    {ok, _} = supervisor:start_child(?MODULE, child_spec(Node, Idx));
+                {_, undefined, _, _} ->
+                    _ = supervisor:delete_child(?MODULE, ChildId),
+                    {ok, _} = supervisor:start_child(?MODULE, child_spec(Node, Idx));
+                {_, restarting, _, _} ->
+                    ok;
+                {_, Pid, _, _} when is_pid(Pid) ->
+                    ok
+            end
+        end,
+        lists:seq(0, N - 1)
+    ),
+    ok.
 
 del_cluster_node(Node) ->
-    ChildId = {vmq_cluster_node, Node},
-    case supervisor:terminate_child(?MODULE, ChildId) of
-        ok ->
-            supervisor:delete_child(?MODULE, ChildId);
-        {error, not_found} ->
+    N = pool_size(),
+    lists:foreach(
+        fun(Idx) ->
+            ChildId = {vmq_cluster_node, Node, Idx},
+            case supervisor:terminate_child(?MODULE, ChildId) of
+                ok ->
+                    ets:delete(vmq_cluster_node_pool, {Node, Idx}),
+                    supervisor:delete_child(?MODULE, ChildId);
+                {error, not_found} ->
+                    ok
+            end
+        end,
+        lists:seq(0, N - 1)
+    ),
+    ok.
+
+get_cluster_node(Node, ShardIdx) ->
+    case ets:lookup(vmq_cluster_node_pool, {Node, ShardIdx}) of
+        [{{Node, ShardIdx}, Pid}] ->
+            {ok, Pid};
+        [] ->
             {error, not_found}
     end.
 
 get_cluster_node(Node) ->
-    ChildId = {vmq_cluster_node, Node},
-    case lists:keyfind(ChildId, 1, supervisor:which_children(?MODULE)) of
-        false ->
-            {error, not_found};
-        {_, undefined, _, _} ->
-            %% child was stopped
-            {error, not_found};
-        {_, restarting, _, _} ->
-            %% child is restarting
-            timer:sleep(100),
-            get_cluster_node(Node);
-        {_, Pid, _, _} when is_pid(Pid) ->
-            {ok, Pid}
+    N = pool_size(),
+    get_any_cluster_node(Node, 0, N).
+
+get_any_cluster_node(_Node, Idx, N) when Idx >= N ->
+    {error, not_found};
+get_any_cluster_node(Node, Idx, N) ->
+    case get_cluster_node(Node, Idx) of
+        {ok, Pid} -> {ok, Pid};
+        {error, not_found} -> get_any_cluster_node(Node, Idx + 1, N)
     end.
 
 -spec node_status(node()) -> init | up | down.
 node_status(Node) when Node == node() ->
     up;
 node_status(Node) ->
-    case get_cluster_node(Node) of
-        {ok, Pid} when is_pid(Pid) ->
-            vmq_cluster_node:status(Pid);
-        _ ->
-            down
+    N = pool_size(),
+    pool_status(Node, 0, N, init).
+
+pool_status(_Node, Idx, N, BestStatus) when Idx >= N ->
+    BestStatus;
+pool_status(Node, Idx, N, BestStatus) ->
+    case get_cluster_node(Node, Idx) of
+        {ok, Pid} ->
+            case vmq_cluster_node:status(Pid) of
+                up ->
+                    up;
+                down ->
+                    pool_status(Node, Idx + 1, N, down);
+                init ->
+                    NewBest =
+                        case BestStatus of
+                            down -> down;
+                            _ -> init
+                        end,
+                    pool_status(Node, Idx + 1, N, NewBest)
+            end;
+        {error, not_found} ->
+            pool_status(Node, Idx + 1, N, down)
     end.
 
 %%%===================================================================
@@ -111,6 +161,11 @@ node_status(Node) ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
+    _ = ets:new(vmq_cluster_node_pool,
+                [public, set, named_table, {read_concurrency, true}]),
+    PoolSize = max(1, application:get_env(vmq_server,
+                      outgoing_clustering_connection_count, 4)),
+    ets:insert(vmq_cluster_node_pool, {pool_size, PoolSize}),
     {ok,
         {{one_for_one, 5, 10}, [
             ?CHILD(vmq_cluster_mon, worker, [])
@@ -119,7 +174,7 @@ init([]) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-child_spec(Node) ->
-    {{vmq_cluster_node, Node}, {vmq_cluster_node, start_link, [Node]}, permanent, 5000, worker, [
-        vmq_cluster_node
-    ]}.
+child_spec(Node, Idx) ->
+    {{vmq_cluster_node, Node, Idx},
+     {vmq_cluster_node, start_link, [Node, Idx]},
+     permanent, 5000, worker, [vmq_cluster_node]}.

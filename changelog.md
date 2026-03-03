@@ -1,5 +1,6 @@
 ## VerneMQ 2.1.2
 
+- Enhancement: automatic dead node subscription cleanup with configurable timeout and quorum-based netsplit protection.
 - HTTP status page: Full-page container for improved status page view - especially helpful on wider monitors.
 - XFF/WebSockets: Adapt the XFF trusted proxy validation to check against proxy IP, not last peer in XFF header.
 - vmq_reg_trie: Move from genserver2 to genserver for improved memory management.
@@ -7,7 +8,30 @@
 - Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
 - Enhancement: Don't log msg payload in pubauth errors.
 - Bugfix: active connections count for WS in metrics and listener info.
+- Enhancement: Increase default cluster communication watermarks from 8KB to 1MB (high) and 4KB to 512KB (low) to reduce flow-control oscillation and improve inter-node throughput under load.
+||||||| a855c08a
+- Enhancement: replace modulo-based sync node selection in vmq_reg_sync with consistent hash ring to prevent key remapping during cluster membership changes.
+||||||| a855c08a
+- Enhancement: vmq_cluster_node: Add configurable buffer drop policy (outgoing_clustering_buffer_drop_policy) with QoS-aware eviction. Both modes evict QoS 0 messages before QoS 1/2. 'lifo' (default) evicts newest buffered messages first; 'fifo' evicts oldest first.
+||||||| a855c08a
+- Enhancement: replace modulo-based sync node selection in vmq_reg_sync with consistent hash ring to prevent key remapping during cluster membership changes.
+||||||| a855c08a
+- Bugfix: vmq_reg: Fix message loss window during queue migration when client reconnects to a different node. Metadata is now written after the old queue starts draining instead of before, preventing out-of-order delivery.
+||||||| a855c08a
+- Enhancement: Parallel cluster readiness checks via erpc:multicall (5s total worst-case vs N*5s). New hidden setting: cluster_ready_rpc_timeout
+||||||| a855c08a
+- Enhancement: Optimize shared subscription subscriber selection from O(N log N) sort to O(N) list rotation.
+||||||| a855c08a
+- vmq_swc: Add adaptive fast gossip mode for faster membership convergence after cluster changes
+||||||| a855c08a
+- vmq_swc: Add adaptive fast gossip mode for faster membership convergence after cluster changes
 
+||||||| a855c08a
+
+- Bugfix: Fix silent subscription loss during concurrent subscribes across cluster nodes by using set-union merge instead of LWW for subscriber metadata conflict resolution.
+||||||| a855c08a
+
+- Bugfix: closed connection count for mqtt listeners when there is an exception in the connection loop.
 
 ## VerneMQ 2.1.1
 
@@ -59,13 +83,13 @@
 - Breaking on-disk format enhancement: separate metadata stores into DKM store and object store.
 - Bugfix: Configuration parsing for domain sockets (#2372)
 - Dependency: Update Cuttlefish to 3.4.0
-- Retain Cache/Server: Add setting (`expire_retain_cache`) for automatic removal of expired retained messages (#2373) 
+- Retain Cache/Server: Add setting (`expire_retain_cache`) for automatic removal of expired retained messages (#2373)
 - vmq_diversity (PostGreSQL): Add method parameter to validate_result_client_side (#2361)
 - vmq_diversity: change mongodb-erlang dep to fork supporting MongoDB 6 (#2358)
 - Add NULL check in ensure_utf8 (#2356)
 - Enhancement: tighten max_packet_size checks in parsers (#2352)
 - Enhancement: Do not load non-persistent subscriptions into routing tables at boot (#2351)
-- Remove vmq_pulse (deprecated remote diagnostics plugin) (#2329) 
+- Remove vmq_pulse (deprecated remote diagnostics plugin) (#2329)
 - vmq_diversity: set SSL to 'off' as a default in MySQL2 plugin (#2340)
 - vmq_diversity: extend SSL options for MongoDB (#2324)
 - Initial support for compile with OTP-27 (#2293)
@@ -79,7 +103,7 @@
 - Bugfix: Client Pub Messages should not accept subscription identifier (#2283)
 - Enhancement: Support JSON Logformat on Console (#2295)
 - Bugfix: Ensure that client_id, username and topics are well-formed UTF8 strings (#2283)
-- Bugfix: Fix an auth issue with vmq_http_pub when using vmq_diversity (#2308) 
+- Bugfix: Fix an auth issue with vmq_http_pub when using vmq_diversity (#2308)
 - Bugfix: Correct SWC summary for empty Nodeclocks that prevented cluster joins in some situations
 - Enhancement (vmq_diversity): add "depth", "verify", "use_system_cas" and "customize_hostname_check" SSL settings to Postgres settings. Set server name indication to configured host automatically.
 - Bugfix: Per MQTT v5 protocol spec authentication data without authentication method is a protocol error.
@@ -100,7 +124,7 @@
 - Remove deprecated subscriber format (#2247)
 - Protect against empty XFF CN/Username
 - Add simple options to HTTP health listener (health/ping)
-- Remove deprecated allow_multiple_sessions 
+- Remove deprecated allow_multiple_sessions
 - Improve systemd support: Add support of systemd-notify
 - New feature: Allow downgrade of client stopped due to keepalive from warning to info message (logging.keepalive_as_warning = off)
 - Bugix: Persist QoS0 to disk in case of outgoing upgrade_qos (#2220)
@@ -125,7 +149,7 @@
 - New Plugin: 'vmq_http_pub', allows to ingest MQTT messages via a HTTP REST interface
 - Allow configuration of `max_request_line_length` for HTTP(S) listeners
 - Improve memory footprint and performance of sessions that subscribe to many topics (new configurable `vmq_reg_ordered_trie` module, the old `vmq_reg_trie` is kept as default)
-- Bugfix: Use default regview as information source for status page 
+- Bugfix: Use default regview as information source for status page
 - Add support for x-forward-for (XFF) header (Websockets) (#1783)
 - Bugfix: QoS0 message shall ignore receive maximum setting (#2150)
 - Offline queues to online queue transition can (temporarily) override the max online queue size (#1663)
@@ -141,7 +165,7 @@
 - Add 'keypasswd': Allows setting password for pem keyfile (#1676)
 - Bugfix: Improve warning messages for unexpected frame type error to track origin (#1671)
 - Bugfix: Remove special chars in auto-generated client id (#1673)
-- Bugfix: Websocket returned error 500 and wrote to log, instead of returning 426 (protocol upgrade) #1983 
+- Bugfix: Websocket returned error 500 and wrote to log, instead of returning 426 (protocol upgrade) #1983
 - Allow to specify a maximum connection lifetime (per listener). The lifetime can be overwriten by on_register hooks.
 - Improve TLSv1.3 support (Documentation, CLI, Testsuite)
 - Improve HTTP/2 support for HTTPS listeners (#2117)
@@ -1596,3 +1620,15 @@ imcompatibilites:
 - Minor bug fixed related to dynamically loading plugins
 
 - Switch to rebar3 (this includes plugins following the rebar3 structure)
+
+## VerneMQ (Unreleased)
+
+- Cluster tiered readiness: Introduce a configurable `cluster_ready_quorum` threshold that replaces the binary ready/not-ready model with three tiers — healthy, degraded, and partitioned. When the fraction of reachable nodes meets the quorum (default 1.0 for backwards compatibility), the cluster enters "degraded" mode instead of marking itself down, allowing operations to continue with partial reachability.
+- New health endpoint `/health/cluster`: Returns detailed cluster status including tier, total/alive node counts, and unreachable node list.
+- Health endpoint enhancements: `/health` now includes `cluster_state` in responses and returns HTTP 200 with warnings (instead of 503) when the cluster is degraded but not fully partitioned.
+- New metrics: `cluster_degraded_detected`, `cluster_degraded_resolved` counters and `cluster_readiness` gauge (2=healthy, 1=degraded, 0=partitioned).
+- vmq_cluster_mon: Faster recheck interval (5s) when cluster is in degraded state.
+- Status page: `/status` endpoint now includes `cluster_tier` in its JSON response.
+- Configuration: `cluster_ready_quorum` is runtime-configurable via `vmq-admin`.
+- vmq_cluster: Internal ETS status format migrated from 3-tuple to 5-tuple with backwards-compatible migration.
+- Tests: Added `vmq_cluster_tier_SUITE` unit tests for tier computation and format migration, tiered readiness integration tests in netsplit suite (including recovery lifecycle, pub/sub during degraded, and HTTP endpoint responses during degraded/partitioned states), and HTTP endpoint tests for `/health/cluster` and `cluster_state` field.

@@ -24,6 +24,7 @@ routes() ->
     [
         {"/health", ?MODULE, []},
         {"/health/ping", ?MODULE, []},
+        {"/health/cluster", ?MODULE, []},
         {"/health/listeners", ?MODULE, []},
         {"/health/listeners_full_cluster", ?MODULE, []}
     ].
@@ -35,15 +36,34 @@ init(Req, Opts) ->
             <<"/health/ping">> ->
                 {200, [{<<"status">>, <<"OK">>}]};
             <<"/health">> ->
+                Tier = vmq_cluster:cluster_tier(),
+                TierBin = atom_to_binary(Tier, utf8),
                 case check_health_concerns() of
                     [] ->
-                        {200, [{<<"status">>, <<"OK">>}]};
+                        {200, [{<<"status">>, <<"OK">>}, {<<"cluster_state">>, TierBin}]};
                     Concerns ->
-                        {503, [
-                            {<<"status">>, <<"DOWN">>},
-                            {<<"reasons">>, Concerns}
-                        ]}
+                        HttpCode =
+                            case Tier of
+                                partitioned -> 503;
+                                _ -> 200
+                            end,
+                        case Tier of
+                            partitioned ->
+                                {HttpCode, [
+                                    {<<"status">>, <<"DOWN">>},
+                                    {<<"cluster_state">>, TierBin},
+                                    {<<"reasons">>, Concerns}
+                                ]};
+                            _ ->
+                                {HttpCode, [
+                                    {<<"status">>, <<"OK">>},
+                                    {<<"cluster_state">>, TierBin},
+                                    {<<"warnings">>, Concerns}
+                                ]}
+                        end
                 end;
+            <<"/health/cluster">> ->
+                cluster_detail_response();
             <<"/health/listeners">> ->
                 case listeners_status() of
                     ok ->
@@ -98,14 +118,47 @@ cluster_status() ->
                 {error, "Unknown cluster status"};
             Status ->
                 case lists:keyfind(ThisNode, 1, Status) of
-                    {ThisNode, true} -> ok;
-                    false -> {error, "Node has not joined cluster"}
+                    {ThisNode, true} ->
+                        case vmq_cluster:cluster_tier() of
+                            partitioned -> {error, "Cluster is partitioned"};
+                            degraded -> {error, "Cluster is degraded"};
+                            _ -> ok
+                        end;
+                    false ->
+                        {error, "Node has not joined cluster"}
                 end
         end
     catch
         Exception:Reason ->
             ?LOG_DEBUG("Cluster status check failed ~p:~p", [Exception, Reason]),
             {error, "Unknown cluster status"}
+    end.
+
+cluster_detail_response() ->
+    try
+        Tier = vmq_cluster:cluster_tier(),
+        TierBin = atom_to_binary(Tier, utf8),
+        StatusList = vmq_cluster:status(),
+        UnreachableNodes = [atom_to_binary(N, utf8) || {N, false} <- StatusList],
+        TotalNodes = length(StatusList),
+        AliveCount = length([N || {N, true} <- StatusList]),
+        HttpCode =
+            case Tier of
+                partitioned -> 503;
+                _ -> 200
+            end,
+        {HttpCode, [
+            {<<"cluster_tier">>, TierBin},
+            {<<"total_nodes">>, TotalNodes},
+            {<<"alive_nodes">>, AliveCount},
+            {<<"unreachable_nodes_list">>, UnreachableNodes}
+        ]}
+    catch
+        _:_ ->
+            {503, [
+                {<<"status">>, <<"error">>},
+                {<<"reason">>, <<"Unable to determine cluster status">>}
+            ]}
     end.
 
 -spec listeners_status() -> ok | {error, Reason :: string()}.

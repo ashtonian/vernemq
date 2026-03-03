@@ -39,6 +39,9 @@
         {default_reg_view, vmq_reg_trie},
         {reg_views, [vmq_reg_trie]},
 
+        % reg trie worker opts
+        {reg_trie_workers, 8},
+
         % queue supervisor supervisor opts
         {queue_sup_sup_children, 50},
 
@@ -124,6 +127,9 @@
         %{graphite_interval, 20000},
         %{graphite_api_key, ""},
         %{graphite_prefix, ""}
+
+        % Cluster readiness quorum (1.0 = all nodes must be alive)
+        {cluster_ready_quorum, 1.0},
 
         % Systree
         {systree_enabled, true}

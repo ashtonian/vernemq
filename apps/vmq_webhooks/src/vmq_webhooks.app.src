@@ -13,6 +13,7 @@
         clique,
         poolboy,
         jsx,
+        msgpack,
         hackney
     ]},
     {env, [

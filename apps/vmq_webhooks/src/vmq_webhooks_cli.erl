@@ -105,7 +105,8 @@ status_cmd() ->
                             {hook, Hook},
                             {endpoint, binary_to_list(Endpoint)},
                             {base64payload, b64opt(Opts)},
-                            {response_timeout, maps:get(response_timeout, Opts)}
+                            {response_timeout, maps:get(response_timeout, Opts)},
+                            {payload_format, maps:get(payload_format, Opts, json)}
                         ]
                      || {Hook, Endpoints} <- vmq_webhooks_plugin:all_hooks(),
                         {Endpoint, Opts} <- Endpoints
@@ -152,6 +153,14 @@ register_cmd() ->
                         {{error, {invalid_flag_value, {respose_timeout, Val}}}}
                 end
             end}
+        ]},
+        {payload_format, [
+            {longname, "payload_format"},
+            {typecast, fun
+                ("json") -> json;
+                ("msgpack") -> msgpack;
+                (Val) -> {{error, {invalid_flag_value, {payload_format, Val}}}}
+            end}
         ]}
     ],
     Callback =
@@ -179,9 +188,10 @@ get_opts(Flags) ->
     Defaults = #{
         base64_payload => true,
         no_payload => false,
-        response_timeout => 5000
+        response_timeout => 5000,
+        payload_format => json
     },
-    Keys = [base64_payload, no_payload, response_timeout],
+    Keys = [base64_payload, no_payload, response_timeout, payload_format],
     maps:merge(Defaults, maps:with(Keys, maps:from_list(Flags))).
 
 deregister_cmd() ->
@@ -299,7 +309,11 @@ register_usage() ->
         "     object. Defaults to false.\n",
         "  --response_timeout=TimeoutInMilliseconds\n",
         "     Set the timeout for the endpoint to respond.\n",
-        "     Defaults to 5000 milliseconds.",
+        "     Defaults to 5000 milliseconds.\n",
+        "  --payload_format=<json|msgpack>\n",
+        "     Set the wire format for the webhook. msgpack is faster and\n",
+        "     supports native binary payloads (no base64 needed).\n",
+        "     Defaults to json.",
         "\n\n"
     ].
 
