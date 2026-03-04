@@ -315,7 +315,7 @@ handle_message({msg_async, Msg}, State) ->
     Bin = term_to_binary(Msg),
     L = byte_size(Bin),
     BinMsg = <<"msg", L:32, Bin/binary>>,
-    {_Dropped, NewState} = buffer_message(BinMsg, State),
+    {_Dropped, NewState} = buffer_message(BinMsg, 1, State),
     NewState;
 handle_message(
     {connect_async_done, AsyncPid, {ok, {Transport, Socket}}},
