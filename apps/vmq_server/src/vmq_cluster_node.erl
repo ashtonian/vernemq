@@ -44,8 +44,13 @@
     socket,
     transport,
     reachable = false,
-    pending = [],
+    %% Two-queue buffer: q0 holds QoS 0 messages (evicted first),
+    %% q12 holds QoS 1/2 messages (evicted last). q_size tracks total bytes.
+    q0 = queue:new(),
+    q12 = queue:new(),
+    q_size = 0,
     max_queue_size,
+    drop_policy,
     reconnect_tref,
     async_connect_pid,
     backoff_count = 0,
@@ -125,6 +130,7 @@ status(Pid) ->
 
 init([Parent, RemoteNode]) ->
     MaxQueueSize = vmq_config:get_env(outgoing_clustering_buffer_size),
+    DropPolicy = vmq_config:get_env(outgoing_clustering_buffer_drop_policy),
     proc_lib:init_ack(Parent, {ok, self()}),
     % Delay the initial connect attempt, this is useful when automating
     % cluster node setup, where multiple nodes are concurrently setup.
@@ -134,10 +140,15 @@ init([Parent, RemoteNode]) ->
         outgoing_clustering_reconnect_base_delay, ?DEFAULT_RECONNECT_BASE
     ),
     erlang:send_after(InitDelay, self(), reconnect),
-    loop(#state{parent = Parent, node = RemoteNode, max_queue_size = MaxQueueSize}).
+    loop(#state{
+        parent = Parent,
+        node = RemoteNode,
+        max_queue_size = MaxQueueSize,
+        drop_policy = DropPolicy
+    }).
 
-loop(#state{pending = Pending, reachable = Reachable} = State) when
-    Pending == [];
+loop(#state{q_size = QSize, reachable = Reachable} = State) when
+    QSize == 0;
     Reachable == false
 ->
     receive
@@ -154,34 +165,100 @@ loop(#state{} = State) ->
 
 buffer_message(
     BinMsg,
+    QoS,
     #state{
-        pending = Pending,
+        q_size = QSize,
         max_queue_size = Max,
         reachable = Reachable,
+        drop_policy = DropPolicy,
         bytes_dropped = {{M, S, _}, V}
     } = State
 ) ->
-    {NewPending, Dropped} =
+    MsgSize = byte_size(BinMsg),
+    {NewState, Evicted, IncomingDropped} =
         case Reachable of
             true ->
-                {[BinMsg | Pending], 0};
+                {buf_enqueue(BinMsg, QoS, MsgSize, State), 0, 0};
             false ->
-                case iolist_size(Pending) < Max of
+                case QSize + MsgSize =< Max of
                     true ->
-                        {[BinMsg | Pending], 0};
+                        {buf_enqueue(BinMsg, QoS, MsgSize, State), 0, 0};
                     false ->
-                        {Pending, byte_size(BinMsg)}
+                        drop_and_buf_enqueue(BinMsg, QoS, MsgSize, DropPolicy, State)
                 end
         end,
+    TotalDropped = Evicted + IncomingDropped,
     NewBytesDropped =
         case os:timestamp() of
             {M, S, _} = TS ->
-                {TS, V + Dropped};
+                {TS, V + TotalDropped};
             TS ->
-                _ = vmq_metrics:incr_cluster_bytes_dropped(V + Dropped),
+                _ = vmq_metrics:incr_cluster_bytes_dropped(V + TotalDropped),
                 {TS, 0}
         end,
-    {Dropped, maybe_flush(State#state{pending = NewPending, bytes_dropped = NewBytesDropped})}.
+    {IncomingDropped, maybe_flush(NewState#state{bytes_dropped = NewBytesDropped})}.
+
+%% Both policies are QoS-aware: evict QoS 0 messages before QoS 1/2.
+%% lifo: evict newest buffered messages first (queue:out_r)
+%% fifo: evict oldest buffered messages first (queue:out)
+drop_and_buf_enqueue(BinMsg, QoS, MsgSize, Policy, State) ->
+    OutFun =
+        case Policy of
+            fifo -> fun queue:out/1;
+            lifo -> fun queue:out_r/1
+        end,
+    {State1, Evicted} = evict_until_fits(MsgSize, OutFun, State, 0),
+    case State1#state.q_size + MsgSize =< State1#state.max_queue_size of
+        true ->
+            {buf_enqueue(BinMsg, QoS, MsgSize, State1), Evicted, 0};
+        false ->
+            %% Could not free enough space (e.g. single message > max) — drop incoming
+            {State1, Evicted, MsgSize}
+    end.
+
+buf_enqueue(BinMsg, 0, MsgSize, #state{q0 = Q0, q_size = QSize} = State) ->
+    State#state{q0 = queue:in(BinMsg, Q0), q_size = QSize + MsgSize};
+buf_enqueue(BinMsg, _QoS, MsgSize, #state{q12 = Q12, q_size = QSize} = State) ->
+    State#state{q12 = queue:in(BinMsg, Q12), q_size = QSize + MsgSize}.
+
+%% Evict messages until the new message fits. QoS 0 messages are evicted
+%% before QoS 1/2. OutFun determines eviction direction:
+%%   queue:out/1  (fifo) - evict from front (oldest first)
+%%   queue:out_r/1 (lifo) - evict from rear (newest first)
+evict_until_fits(MsgSize, OutFun, #state{q0 = Q0, q12 = Q12, q_size = QSize, max_queue_size = Max} = State, Evicted) ->
+    case QSize + MsgSize =< Max of
+        true ->
+            {State, Evicted};
+        false ->
+            case OutFun(Q0) of
+                {{value, Old}, Q0New} ->
+                    Freed = byte_size(Old),
+                    evict_until_fits(
+                        MsgSize,
+                        OutFun,
+                        State#state{q0 = Q0New, q_size = QSize - Freed},
+                        Evicted + Freed
+                    );
+                {empty, _} ->
+                    case OutFun(Q12) of
+                        {{value, Old}, Q12New} ->
+                            Freed = byte_size(Old),
+                            evict_until_fits(
+                                MsgSize,
+                                OutFun,
+                                State#state{q12 = Q12New, q_size = QSize - Freed},
+                                Evicted + Freed
+                            );
+                        {empty, _} ->
+                            {State, Evicted}
+                    end
+            end
+    end.
+
+%% Extract QoS from the term for buffer priority classification.
+extract_qos(#vmq_msg{qos = QoS}) -> QoS;
+extract_qos({enqueue_many, _, [{deliver, QoS, _} | _], _}) -> QoS;
+extract_qos(_) -> 1.
 
 handle_message(
     {enq, CallerPid, Ref, _, BufferIfUnreachable},
@@ -195,9 +272,10 @@ handle_message({enq, CallerPid, Ref, Term, _}, State) ->
     Bin = term_to_binary({CallerPid, Ref, Term}),
     L = byte_size(Bin),
     BinMsg = <<"enq", L:32, Bin/binary>>,
+    QoS = extract_qos(Term),
     %% buffering is allowed, but will only happen if the remote node
     %% is unreachable
-    {Dropped, NewState} = buffer_message(BinMsg, State),
+    {Dropped, NewState} = buffer_message(BinMsg, QoS, State),
     case Dropped > 0 of
         true ->
             CallerPid ! {Ref, {error, msg_dropped}};
@@ -206,11 +284,23 @@ handle_message({enq, CallerPid, Ref, Term, _}, State) ->
             ignore
     end,
     NewState;
+handle_message({msg, CallerPid, Ref, #vmq_msg{qos = QoS} = Msg}, State) ->
+    Bin = term_to_binary(Msg),
+    L = byte_size(Bin),
+    BinMsg = <<"msg", L:32, Bin/binary>>,
+    {Dropped, NewState} = buffer_message(BinMsg, QoS, State),
+    case Dropped > 0 of
+        true ->
+            CallerPid ! {Ref, {error, msg_dropped}};
+        false ->
+            CallerPid ! {Ref, ok}
+    end,
+    NewState;
 handle_message({msg, CallerPid, Ref, Msg}, State) ->
     Bin = term_to_binary(Msg),
     L = byte_size(Bin),
     BinMsg = <<"msg", L:32, Bin/binary>>,
-    {Dropped, NewState} = buffer_message(BinMsg, State),
+    {Dropped, NewState} = buffer_message(BinMsg, 1, State),
     case Dropped > 0 of
         true ->
             CallerPid ! {Ref, {error, msg_dropped}};
@@ -301,8 +391,8 @@ handle_message(Msg, #state{node = Node, reachable = Reachable} = State) ->
 
 % tcp-over-ethernet MSS 1460
 -define(FLUSH_THRESHOLD, 1460).
-maybe_flush(#state{pending = Pending} = State) ->
-    case iolist_size(Pending) >= ?FLUSH_THRESHOLD of
+maybe_flush(#state{q_size = QSize} = State) ->
+    case QSize >= ?FLUSH_THRESHOLD of
         true ->
             internal_flush(State);
         false ->
@@ -311,19 +401,24 @@ maybe_flush(#state{pending = Pending} = State) ->
 
 internal_flush(#state{reachable = false} = State) ->
     State;
-internal_flush(#state{pending = []} = State) ->
+internal_flush(#state{q_size = 0} = State) ->
     State;
 internal_flush(
     #state{
-        pending = Pending,
+        q0 = Q0,
+        q12 = Q12,
+        q_size = QSize,
         node = Node,
         transport = Transport,
         socket = Socket,
         bytes_send = {{M, S, _}, V}
     } = State
 ) ->
-    L = iolist_size(Pending),
-    Msg = [<<"vmq-send", L:32>> | lists:reverse(Pending)],
+    %% Drain both queues in FIFO order. QoS 1/2 messages are sent first
+    %% (higher priority), followed by QoS 0.
+    Pending = queue:to_list(Q12) ++ queue:to_list(Q0),
+    L = QSize,
+    Msg = [<<"vmq-send", L:32>> | Pending],
     case send(Transport, Socket, Msg) of
         ok ->
             NewBytesSend =
@@ -334,11 +429,14 @@ internal_flush(
                         _ = vmq_metrics:incr_cluster_bytes_sent(V + L),
                         {TS, 0}
                 end,
-            State#state{pending = [], bytes_send = NewBytesSend};
+            State#state{
+                q0 = queue:new(), q12 = queue:new(), q_size = 0,
+                bytes_send = NewBytesSend
+            };
         {error, Reason} ->
             ?LOG_WARNING(
                 "can't send ~p bytes to ~p due to ~p, reconnect!",
-                [iolist_size(Pending), Node, Reason]
+                [QSize, Node, Reason]
             ),
             close_reconnect(State)
     end.
