@@ -48,7 +48,15 @@ start_link() ->
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
     SupFlags =
-        #{strategy => one_for_one, intensity => 1, period => 5},
+        #{strategy => one_for_one, intensity => 10, period => 5},
+    PoolSize = application:get_env(vmq_webhooks, async_pool_size, 100),
+    WorkerSpecs = [#{
+        id => {vmq_webhooks_async_worker, Id},
+        start => {vmq_webhooks_async_worker, start_link, [Id]},
+        restart => permanent,
+        type => worker,
+        modules => [vmq_webhooks_async_worker]
+    } || Id <- lists:seq(0, PoolSize - 1)],
     ChildSpecs =
         [
             #{
@@ -58,7 +66,7 @@ init([]) ->
                 type => worker,
                 modules => [vmq_webhooks_plugin]
             }
-        ],
+        ] ++ WorkerSpecs,
     {ok, {SupFlags, ChildSpecs}}.
 %%====================================================================
 %% Internal functions

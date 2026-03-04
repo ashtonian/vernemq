@@ -66,15 +66,11 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
+%% TODO: backport — use persistent_term for hot-path is_accepting check
+%% to avoid serializing every MQTT connect through a gen_server:call.
 -spec is_accepting() -> boolean().
 is_accepting() ->
-    try
-        gen_server:call(?SERVER, is_accepting, 1000)
-    catch
-        exit:{timeout, _} -> true;
-        exit:{noproc, _} -> true;
-        _:_ -> true
-    end.
+    persistent_term:get({vmq_balance_srv, accepting}, true).
 
 -spec balance_stats() ->
     {
@@ -123,6 +119,9 @@ init([]) ->
         "min_connections=~p, check_interval=~pms",
         [Enabled, RejectEnabled, Threshold, Hysteresis, MinConnections, CheckInterval]
     ),
+    %% Initialize persistent_term so is_accepting/0 returns the correct
+    %% value before the first balance check runs.
+    persistent_term:put({vmq_balance_srv, accepting}, true),
     HooksRegistered = maybe_update_hooks(false, Enabled andalso RejectEnabled),
     {ok, #state{
         enabled = Enabled,
@@ -174,7 +173,10 @@ handle_info(check_balance, State) ->
     NewState =
         case Enabled of
             true -> do_balance_check(State#state{enabled = true});
-            false -> State#state{enabled = false, accepting = true}
+            false ->
+                %% When disabled, always accept — update persistent_term.
+                persistent_term:put({vmq_balance_srv, accepting}, true),
+                State#state{enabled = false, accepting = true}
         end,
     TRef = schedule_check(Interval),
     {noreply, NewState#state{
@@ -263,6 +265,10 @@ do_balance_check(State) ->
 
     case WasAccepting =/= NewAccepting of
         true ->
+            %% Update persistent_term so is_accepting/0 reads the new value
+            %% without going through gen_server:call.
+            EffectiveAccepting = (not State#state.enabled) orelse NewAccepting,
+            persistent_term:put({vmq_balance_srv, accepting}, EffectiveAccepting),
             ?LOG_WARNING(
                 "accepting changed ~p -> ~p "
                 "(local=~p, avg=~.1f, total=~p, nodes=~p)",

@@ -444,11 +444,11 @@ internal_flush(
         bytes_send = {{M, S, _}, V}
     } = State
 ) ->
+    %% TODO: backport — use nested iolist to avoid list concatenation.
     %% Drain both queues in FIFO order. QoS 1/2 messages are sent first
     %% (higher priority), followed by QoS 0.
-    Pending = queue:to_list(Q12) ++ queue:to_list(Q0),
     L = QSize,
-    Msg = [<<"vmq-send", L:32>> | Pending],
+    Msg = [<<"vmq-send", L:32>>, queue:to_list(Q12), queue:to_list(Q0)],
     case send(Transport, Socket, Msg) of
         ok ->
             NewBytesSend =

@@ -142,25 +142,28 @@ num_shards() ->
 shard_for_key(SyncKey) ->
     shard_name(erlang:phash2(SyncKey, num_shards())).
 
+%% TODO: backport — use generation counter from vmq_cluster to avoid
+%% lists:sort(vmq_cluster:nodes()) ETS scan on every sync call.
 ensure_ring() ->
-    CurrentNodes = lists:sort(vmq_cluster:nodes()),
+    CurrentGen = vmq_cluster:cluster_generation(),
     case persistent_term:get({vmq_consistent_hash, ring}, undefined) of
         undefined ->
-            rebuild_ring(CurrentNodes);
-        {CachedNodes, Ring} ->
-            case CachedNodes =:= CurrentNodes of
+            rebuild_ring(CurrentGen);
+        {CachedGen, Ring} ->
+            case CachedGen =:= CurrentGen of
                 true -> Ring;
-                false -> rebuild_ring(CurrentNodes)
+                false -> rebuild_ring(CurrentGen)
             end
     end.
 
-rebuild_ring(Nodes) ->
+rebuild_ring(Generation) ->
+    Nodes = lists:sort(vmq_cluster:nodes()),
     case Nodes of
         [] ->
             {error, no_nodes};
         _ ->
             Ring = vmq_consistent_hash:new(Nodes, 256),
-            persistent_term:put({vmq_consistent_hash, ring}, {Nodes, Ring}),
+            persistent_term:put({vmq_consistent_hash, ring}, {Generation, Ring}),
             Ring
     end.
 

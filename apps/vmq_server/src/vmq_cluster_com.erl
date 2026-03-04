@@ -14,8 +14,9 @@
 %% limitations under the License.
 
 %% TODO: merge upstream — this module adds routing worker offload and
-%% spawn_link for enqueue operations. Consider bounded worker pool
-%% for enqueue path to cap concurrency.
+%% spawn_link for enqueue operations, and routing worker pool per
+%% connection (hash-sharded by {MP, Topic}). Consider bounded worker
+%% pool for enqueue path to cap concurrency.
 -module(vmq_cluster_com).
 -include("vmq_server.hrl").
 -behaviour(ranch_protocol).
@@ -38,7 +39,8 @@
     parser_state,
     reg_view,
     proto_tag,
-    routing_worker,
+    routing_workers,        %% tuple of N worker pids
+    num_routing_workers,    %% size of the tuple
     bytes_recv = {os:timestamp(), 0}
 }).
 
@@ -78,12 +80,17 @@ init(Ref, Transport, Opts) ->
     ]),
     case active_once(MaskedSocket) of
         ok ->
-            RoutingWorker = spawn_link(fun() -> routing_worker_loop(RegView) end),
+            NumRoutingWorkers = vmq_config:get_env(cluster_routing_workers, 4),
+            Workers = list_to_tuple([
+                spawn_link(fun() -> routing_worker_loop(RegView) end)
+                || _ <- lists:seq(1, NumRoutingWorkers)
+            ]),
             loop(#st{
                 socket = MaskedSocket,
                 reg_view = RegView,
                 proto_tag = proto_tag(Transport),
-                routing_worker = RoutingWorker
+                routing_workers = Workers,
+                num_routing_workers = NumRoutingWorkers
             });
         {error, Reason} ->
             exit(Reason)
@@ -100,10 +107,11 @@ loop(#st{} = State) ->
         M ->
             loop(handle_message(M, State))
     end;
-loop({exit, Reason, #st{routing_worker = RoutingWorker}}) ->
-    %% Explicitly shut down the routing worker to prevent process leaks.
-    case RoutingWorker of
-        Pid when is_pid(Pid) -> exit(Pid, shutdown);
+loop({exit, Reason, #st{routing_workers = Workers}}) ->
+    %% Explicitly shut down all routing workers to prevent process leaks.
+    case Workers of
+        Tuple when is_tuple(Tuple) ->
+            [exit(Pid, shutdown) || Pid <- tuple_to_list(Tuple)];
         _ -> ok
     end,
     case Reason of
@@ -165,15 +173,17 @@ handle_message({ProtoClosed, _}, #st{proto_tag = {_, ProtoClosed, _}} = State) -
     {exit, normal, State};
 handle_message({ProtoErr, _, Error}, #st{proto_tag = {_, _, ProtoErr}} = State) ->
     {exit, Error, State};
-handle_message({'EXIT', WorkerPid, Reason}, #st{routing_worker = WorkerPid} = State) ->
-    ?LOG_WARNING("cluster_com routing worker died: ~p", [Reason]),
-    {exit, {routing_worker_died, Reason}, State};
-handle_message({'EXIT', _Pid, normal}, State) ->
-    %% enqueue worker finished normally
-    State;
-handle_message({'EXIT', _Pid, Reason}, State) ->
-    ?LOG_DEBUG("cluster_com enqueue worker died: ~p", [Reason]),
-    State;
+handle_message({'EXIT', WorkerPid, Reason}, #st{routing_workers = Workers} = State)
+  when is_tuple(Workers) ->
+    case lists:member(WorkerPid, tuple_to_list(Workers)) of
+        true ->
+            ?LOG_WARNING("cluster_com routing worker died: ~p", [Reason]),
+            {exit, {routing_worker_died, Reason}, State};
+        false ->
+            handle_exit(WorkerPid, Reason, State)
+    end;
+handle_message({'EXIT', Pid, Reason}, State) ->
+    handle_exit(Pid, Reason, State);
 handle_message({'DOWN', _, process, _ClusterNodePid, Reason}, State) ->
     {exit, Reason, State}.
 
@@ -204,7 +214,8 @@ process(<<"msg", L:32, Bin:L/binary, Rest/binary>>, St) ->
         mountpoint = MP,
         routing_key = Topic
     } = Msg = to_vmq_msg(binary_to_term(Bin)),
-    St#st.routing_worker ! {route, MP, Topic, Msg},
+    Idx = (erlang:phash2({MP, Topic}) rem St#st.num_routing_workers) + 1,
+    element(Idx, St#st.routing_workers) ! {route, MP, Topic, Msg},
     process(Rest, St);
 process(<<"enq", L:32, Bin:L/binary, Rest/binary>>, St) ->
     case binary_to_term(Bin) of
@@ -248,6 +259,13 @@ process(<<>>, _) ->
 process(<<Cmd:3/binary, L:32, _:L/binary, Rest/binary>>, St) ->
     ?LOG_WARNING("unknown message: ~p", [Cmd]),
     process(Rest, St).
+
+handle_exit(_Pid, normal, State) ->
+    %% enqueue worker finished normally
+    State;
+handle_exit(_Pid, Reason, State) ->
+    ?LOG_DEBUG("cluster_com enqueue worker died: ~p", [Reason]),
+    State.
 
 routing_worker_loop(RegView) ->
     process_flag(trap_exit, true),

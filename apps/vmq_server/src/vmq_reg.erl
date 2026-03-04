@@ -236,29 +236,37 @@ register_subscriber_(SessionPid, SubscriberId, StartClean, QueueOpts, N, Reason)
             {SubscriptionsPresent, UpdatedSubs, ChangedNodes, NeedsWrite} =
                 compute_remap_subscriber(SubscriberId, StartClean),
             SessionPresent1 = SubscriptionsPresent or QueuePresent,
-            BlockCondFun = fun(Sid, OldNode) ->
-                case rpc:call(OldNode, ?MODULE, get_queue_pid, [Sid]) of
-                    not_found ->
-                        case get_queue_pid(Sid) of
-                            not_found ->
-                                block;
-                            LocalPid when is_pid(LocalPid) ->
-                                done
-                        end;
-                    OldPid when is_pid(OldPid) ->
-                        case vmq_queue:info(OldPid) of
-                            #{statename := drain} ->
-                                done;
-                            {error, noproc} ->
-                                %% Queue process died, treat as migrated
-                                done;
-                            _ ->
-                                block
-                        end;
-                    {badrpc, _} ->
-                        %% Old node unreachable, nothing to drain from
-                        done
-                end
+            BlockCondFun = fun
+                (Sid, {_OldNode, not_found}) ->
+                    %% Old queue was already gone at migration time
+                    case get_queue_pid(Sid) of
+                        not_found -> block;
+                        LocalPid when is_pid(LocalPid) -> done
+                    end;
+                (_Sid, {_OldNode, OldQPid}) when is_pid(OldQPid) ->
+                    %% Use cached PID — skip RPC, vmq_queue:info works
+                    %% on remote pids via Erlang distribution
+                    case vmq_queue:info(OldQPid) of
+                        #{statename := drain} -> done;
+                        {error, noproc} -> done;
+                        _ -> block
+                    end;
+                (Sid, OldNode) when is_atom(OldNode) ->
+                    %% Fallback for block_until/4 path (no cached PID)
+                    case rpc:call(OldNode, ?MODULE, get_queue_pid, [Sid]) of
+                        not_found ->
+                            case get_queue_pid(Sid) of
+                                not_found -> block;
+                                LocalPid when is_pid(LocalPid) -> done
+                            end;
+                        OldPid when is_pid(OldPid) ->
+                            case vmq_queue:info(OldPid) of
+                                #{statename := drain} -> done;
+                                {error, noproc} -> done;
+                                _ -> block
+                            end;
+                        {badrpc, _} -> done
+                    end
             end,
             SessionPresent2 =
                 case StartClean of
@@ -274,9 +282,9 @@ register_subscriber_(SessionPid, SubscriberId, StartClean, QueueOpts, N, Reason)
                         %% Phase 2: Try direct migration via RPC before
                         %% committing metadata (avoids message ordering window)
                         case try_direct_migration(SubscriberId, QPid, ChangedNodes) of
-                            ok ->
+                            {ok, NodePids} ->
                                 %% Phase 3: Poll for drain WITHOUT metadata writes
-                                case block_until_drain(SubscriberId, ChangedNodes, BlockCondFun) of
+                                case block_until_drain(SubscriberId, NodePids, BlockCondFun) of
                                     ok ->
                                         %% Phase 4: Commit metadata (old queue already draining)
                                         maybe_commit(NeedsWrite, SubscriberId, UpdatedSubs);
@@ -1211,28 +1219,35 @@ maybe_commit(false, _SubscriberId, _Subs) ->
 
 %% try_direct_migration/3 attempts direct RPC-based migration for each
 %% changed node, bypassing the metadata-driven migration path.
-%% Returns ok if all nodes succeed, {error, Reason} on first failure.
--spec try_direct_migration(subscriber_id(), pid(), [node()]) -> ok | {error, term()}.
+%% Returns {ok, [{Node, Pid | not_found}]} on success, {error, Reason} on first failure.
+-spec try_direct_migration(subscriber_id(), pid(), [node()]) ->
+    {ok, [{node(), pid() | not_found}]} | {error, term()}.
 try_direct_migration(_SubscriberId, _LocalQPid, []) ->
-    ok;
+    {ok, []};
 try_direct_migration(SubscriberId, LocalQPid, [OldNode | Rest]) ->
     case initiate_direct_migration(SubscriberId, LocalQPid, OldNode) of
-        ok ->
-            try_direct_migration(SubscriberId, LocalQPid, Rest);
+        {ok, PidOrNotFound} ->
+            case try_direct_migration(SubscriberId, LocalQPid, Rest) of
+                {ok, Acc} -> {ok, [{OldNode, PidOrNotFound} | Acc]};
+                {error, _} = Err -> Err
+            end;
         {error, _} = Err ->
             Err
     end.
 
 %% initiate_direct_migration/3 contacts the old node via RPC,
 %% finds the old queue process, and spawns a migration.
+%% Returns {ok, OldQPid} or {ok, not_found} so the caller can cache
+%% the PID for BlockCondFun (avoids duplicate RPC per poll iteration).
 %% vmq_queue:migrate/2 is synchronous (blocks until drain_over),
 %% so we spawn it to avoid blocking the caller.
--spec initiate_direct_migration(subscriber_id(), pid(), node()) -> ok | {error, term()}.
+-spec initiate_direct_migration(subscriber_id(), pid(), node()) ->
+    {ok, pid() | not_found} | {error, term()}.
 initiate_direct_migration(SubscriberId, LocalQPid, OldNode) ->
     case rpc:call(OldNode, ?MODULE, get_queue_pid, [SubscriberId]) of
         not_found ->
             %% Old queue already gone, nothing to migrate
-            ok;
+            {ok, not_found};
         OldQPid when is_pid(OldQPid) ->
             %% Spawn because vmq_queue:migrate/2 blocks until drain completes
             spawn(fun() ->
@@ -1246,7 +1261,7 @@ initiate_direct_migration(SubscriberId, LocalQPid, OldNode) ->
                         )
                 end
             end),
-            ok;
+            {ok, OldQPid};
         {badrpc, Reason} ->
             {error, {badrpc, OldNode, Reason}}
     end.
@@ -1256,19 +1271,19 @@ initiate_direct_migration(SubscriberId, LocalQPid, OldNode) ->
 %% the metadata-driven path if max iterations are exceeded.
 -define(MAX_DRAIN_POLL_ITERATIONS, 100).
 
--spec block_until_drain(subscriber_id(), [node()], fun()) -> ok | timeout.
-block_until_drain(SubscriberId, ChangedNodes, BlockCond) ->
-    block_until_drain(SubscriberId, ChangedNodes, BlockCond, ?MAX_DRAIN_POLL_ITERATIONS).
+-spec block_until_drain(subscriber_id(), [{node(), pid() | not_found}], fun()) -> ok | timeout.
+block_until_drain(SubscriberId, NodePids, BlockCond) ->
+    block_until_drain(SubscriberId, NodePids, BlockCond, ?MAX_DRAIN_POLL_ITERATIONS).
 
 block_until_drain(_, [], _, _) ->
     ok;
 block_until_drain(_, _, _, 0) ->
     timeout;
-block_until_drain(SubscriberId, [Node | Rest] = ChangedNodes, BlockCond, N) ->
-    case BlockCond(SubscriberId, Node) of
+block_until_drain(SubscriberId, [{_Node, _Pid} = NP | Rest] = All, BlockCond, N) ->
+    case BlockCond(SubscriberId, NP) of
         block ->
             timer:sleep(100),
-            block_until_drain(SubscriberId, ChangedNodes, BlockCond, N - 1);
+            block_until_drain(SubscriberId, All, BlockCond, N - 1);
         done ->
             block_until_drain(SubscriberId, Rest, BlockCond, N)
     end.

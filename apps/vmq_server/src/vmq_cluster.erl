@@ -38,6 +38,7 @@
     if_ready/2,
     if_ready/3,
     cluster_tier/0,
+    cluster_generation/0,
     netsplit_statistics/0,
     degraded_statistics/0,
     publish/2,
@@ -78,6 +79,13 @@ recheck() ->
             ?LOG_WARNING("error during cluster checkup due to ~p", [E]),
             E
     end.
+
+%% TODO: backport — generation counter for cluster node list caching.
+%% Bumped on every cluster change so consumers can cheaply detect staleness
+%% with a single integer comparison instead of re-scanning the ETS table.
+-spec cluster_generation() -> non_neg_integer().
+cluster_generation() ->
+    persistent_term:get(vmq_cluster_generation, 0).
 
 -spec nodes() -> [any()].
 nodes() ->
@@ -310,7 +318,11 @@ check_ready(Nodes, _Acc) ->
     Quorum = vmq_config:get_env(cluster_ready_quorum, 1.0),
     NewTier = compute_tier(Acc, Quorum),
     NewObj = compute_transition(NewTier, OldObj),
-    ets:insert(?VMQ_CLUSTER_STATUS, [{ready, NewObj} | Acc]).
+    ets:insert(?VMQ_CLUSTER_STATUS, [{ready, NewObj} | Acc]),
+    %% Bump generation counter so consumers (e.g. vmq_reg_sync) can detect
+    %% cluster membership changes without re-scanning the ETS table.
+    OldGen = persistent_term:get(vmq_cluster_generation, 0),
+    persistent_term:put(vmq_cluster_generation, OldGen + 1).
 
 %% @doc Migrate old 3-tuple ETS format to new 5-tuple.
 -spec migrate_old_format(tuple()) ->

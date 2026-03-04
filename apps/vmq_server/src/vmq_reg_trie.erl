@@ -118,11 +118,13 @@ fold_(SubscriberId, FoldFun, Acc, [{_Topic, Node} | MatchedTopics], Remotes) ->
 fold_(_, _, Acc, [], _) ->
     Acc.
 
+%% TODO: backport — use ets:match_object instead of ets:select to avoid
+%% match spec construction overhead on every subscription lookup.
 lookup_subs(Key) ->
     case ets:lookup(vmq_trie_subs, Key) of
         [{_, fanout}] ->
-            MS = [{{{Key, '$1'}}, [], [{{{Key}, '$1'}}]}],
-            ets:select(vmq_trie_subs_fanout, MS);
+            [{{Key}, SubInfo} || {{_, SubInfo}} <-
+                ets:match_object(vmq_trie_subs_fanout, {{Key, '_'}})];
         [] ->
             []
     end.

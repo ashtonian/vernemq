@@ -89,6 +89,9 @@
     code_change/3
 ]).
 
+%% called by vmq_webhooks_async_worker
+-export([call_endpoint/4]).
+
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
 -endif.
@@ -274,6 +277,7 @@ terminate(_Reason, _State) ->
     ),
     persistent_term:erase(vmq_webhooks_hook_bins),
     persistent_term:erase(vmq_webhooks_async_inflight),
+    persistent_term:erase(vmq_webhooks_async_rr),
     ok.
 
 %%--------------------------------------------------------------------
@@ -341,33 +345,30 @@ refresh_ssl_cache() ->
 
 init_async_inflight() ->
     Ref = atomics:new(1, [{signed, true}]),
-    persistent_term:put(vmq_webhooks_async_inflight, Ref).
+    persistent_term:put(vmq_webhooks_async_inflight, Ref),
+    %% Cache async_pool_size to avoid application:get_env on every webhook call.
+    PoolSize = application:get_env(vmq_webhooks, async_pool_size, 100),
+    persistent_term:put(vmq_webhooks_async_pool_size, PoolSize),
+    %% Round-robin counter for dispatching to worker pool
+    RRRef = atomics:new(1, [{signed, false}]),
+    persistent_term:put(vmq_webhooks_async_rr, RRRef).
 
 async_call_endpoint(Endpoint, EOpts, HookName, Args) ->
     Ref = persistent_term:get(vmq_webhooks_async_inflight),
-    MaxWorkers = application:get_env(vmq_webhooks, async_pool_size, 100),
+    MaxInflight = persistent_term:get(vmq_webhooks_async_pool_size, 100),
     case atomics:add_get(Ref, 1, 1) of
-        N when N > MaxWorkers ->
+        N when N > MaxInflight ->
             atomics:sub(Ref, 1, 1),
             vmq_webhooks_metrics:incr(HookName, errors),
             ?LOG_WARNING(
                 "webhook async pool exhausted (~p/~p), dropping ~p notification",
-                [N - 1, MaxWorkers, HookName]
+                [N - 1, MaxInflight, HookName]
             );
         _ ->
-            spawn(fun() ->
-                try
-                    _ = call_endpoint(Endpoint, EOpts, HookName, Args)
-                catch
-                    Class:Reason:Stack ->
-                        ?LOG_ERROR(
-                            "async webhook ~p crashed: ~p:~p~n~p",
-                            [HookName, Class, Reason, Stack]
-                        )
-                after
-                    atomics:sub(Ref, 1, 1)
-                end
-            end)
+            RRRef = persistent_term:get(vmq_webhooks_async_rr),
+            Idx = atomics:add_get(RRRef, 1, 1) rem MaxInflight,
+            vmq_webhooks_async_worker:worker_name(Idx) !
+                {call_endpoint, Endpoint, EOpts, HookName, Args, Ref}
     end.
 
 %%%===================================================================
