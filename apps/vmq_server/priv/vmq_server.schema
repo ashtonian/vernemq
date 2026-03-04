@@ -127,7 +127,6 @@
                                                               {datatype, integer},
                                                               hidden
                                                              ]}.
-
 %% @doc Secret to be used for crendentials obfuscation. Default is "random" which 
 %% generates a random string. 
 {mapping, "logging.obfuscation_secret", "vmq_server.logging", [
