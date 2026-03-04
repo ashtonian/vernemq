@@ -37,7 +37,8 @@ init(Req, Opts) ->
         {<<"rejections">>, Rejections}
     ],
     Headers = #{<<"content-type">> => <<"application/json">>},
-    cowboy_req:reply(Code, Headers, vmq_json:encode(Payload), Req),
+    Body = try vmq_json:encode(Payload) catch _:_ -> <<"{\"error\":\"encoding_failed\"}">> end,
+    cowboy_req:reply(Code, Headers, Body, Req),
     {ok, Req, Opts}.
 
 is_authorized(Req, State) ->

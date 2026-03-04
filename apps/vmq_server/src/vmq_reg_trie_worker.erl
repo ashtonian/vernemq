@@ -158,13 +158,17 @@ add_complex_topic_cas(MPTopic, Node) ->
         [] ->
             case ets:insert_new(vmq_trie_topic, {MPTopic, 1, [{Node, 1}]}) of
                 true -> ok;
-                false -> add_complex_topic_cas(MPTopic, Node)
+                false ->
+                    erlang:yield(),
+                    add_complex_topic_cas(MPTopic, Node)
             end;
         [{_, TotalCnt, Nodes} = Old] ->
             New = {MPTopic, TotalCnt + 1, add_and_inc(Node, Nodes)},
             case ets:select_replace(vmq_trie_topic, [{Old, [], [{const, New}]}]) of
                 1 -> ok;
-                0 -> add_complex_topic_cas(MPTopic, Node)
+                0 ->
+                    erlang:yield(),
+                    add_complex_topic_cas(MPTopic, Node)
             end
     end.
 
@@ -233,6 +237,8 @@ add_subscriber_group(MP, Node, Group, Topic, SubscriberId, QoS) ->
     Val = {Node, Group, SubscriberId, QoS},
     insert_trie_subs(Key, Val).
 
+%% Ordering invariant: insert fanout data BEFORE the marker so that a reader
+%% seeing the marker is guaranteed to find at least one fanout entry.
 insert_trie_subs(Key, Val) ->
     ets:insert(vmq_trie_subs_fanout, {{Key, Val}}),
     ets:insert(vmq_trie_subs, {Key, fanout}).
@@ -245,6 +251,9 @@ del_subscriber_group(MP, Node, Group, Topic, SubscriberId, QoS) ->
 %% Concurrent-safe delete: after removing the fanout entry and deleting
 %% the marker, re-check whether a concurrent insert_trie_subs added new
 %% entries. If so, re-insert the marker to avoid making them invisible.
+%% Accepted race: between marker delete and re-insert, a concurrent
+%% lookup_subs may briefly return []. This is self-healing — the next
+%% lookup or subscription change will restore visibility.
 del_trie_subs(Key, Val) ->
     ets:delete(vmq_trie_subs_fanout, {Key, Val}),
     case ets:select_count(vmq_trie_subs_fanout, [{{{Key, '_'}}, [], [true]}]) of

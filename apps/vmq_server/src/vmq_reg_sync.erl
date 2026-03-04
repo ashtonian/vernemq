@@ -121,7 +121,9 @@ sync_node(SyncKey) ->
         {error, no_nodes} ->
             node();
         Ring ->
-            vmq_consistent_hash:lookup(SyncKey, Ring)
+            try vmq_consistent_hash:lookup(SyncKey, Ring)
+            catch error:empty_ring -> node()
+            end
     end.
 
 %% Shard helpers

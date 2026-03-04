@@ -47,9 +47,9 @@ start_link() ->
 
 %% Child :: {Id,StartFunc,Restart,Shutdown,Type,Modules}
 init([]) ->
-    SupFlags =
-        #{strategy => one_for_one, intensity => 10, period => 5},
     PoolSize = application:get_env(vmq_webhooks, async_pool_size, 100),
+    SupFlags =
+        #{strategy => one_for_one, intensity => max(10, PoolSize div 2), period => 5},
     WorkerSpecs = [#{
         id => {vmq_webhooks_async_worker, Id},
         start => {vmq_webhooks_async_worker, start_link, [Id]},

@@ -83,9 +83,14 @@ recheck() ->
 %% TODO: backport — generation counter for cluster node list caching.
 %% Bumped on every cluster change so consumers can cheaply detect staleness
 %% with a single integer comparison instead of re-scanning the ETS table.
+%% Uses atomics for thread-safe increment (persistent_term read-then-write
+%% was not atomic and could lose increments under concurrent recheck calls).
 -spec cluster_generation() -> non_neg_integer().
 cluster_generation() ->
-    persistent_term:get(vmq_cluster_generation, 0).
+    case persistent_term:get(vmq_cluster_generation_ref, undefined) of
+        undefined -> 0;
+        Ref -> atomics:get(Ref, 1)
+    end.
 
 -spec nodes() -> [any()].
 nodes() ->
@@ -138,6 +143,7 @@ netsplit_statistics() ->
         {'EXIT', {badarg, _}} ->
             {error, vmq_status_table_down};
         _ ->
+            ?LOG_WARNING("unexpected cluster status format in netsplit_statistics"),
             {0, 0}
     end.
 
@@ -153,6 +159,7 @@ degraded_statistics() ->
         {'EXIT', {badarg, _}} ->
             {error, vmq_status_table_down};
         _ ->
+            ?LOG_WARNING("unexpected cluster status format in degraded_statistics"),
             {0, 0}
     end.
 
@@ -183,7 +190,8 @@ publish(Node, Msg) ->
     end.
 
 publish_async(Node, Msg) ->
-    case vmq_cluster_node_sup:get_cluster_node(Node) of
+    ShardIdx = shard_index_for_publish(),
+    case vmq_cluster_node_sup:get_cluster_node(Node, ShardIdx) of
         {error, not_found} ->
             {error, not_found};
         {ok, Pid} ->
@@ -321,8 +329,15 @@ check_ready(Nodes, _Acc) ->
     ets:insert(?VMQ_CLUSTER_STATUS, [{ready, NewObj} | Acc]),
     %% Bump generation counter so consumers (e.g. vmq_reg_sync) can detect
     %% cluster membership changes without re-scanning the ETS table.
-    OldGen = persistent_term:get(vmq_cluster_generation, 0),
-    persistent_term:put(vmq_cluster_generation, OldGen + 1).
+    %% Uses atomics for thread-safe atomic increment.
+    GenRef = case persistent_term:get(vmq_cluster_generation_ref, undefined) of
+        undefined ->
+            R = atomics:new(1, [{signed, false}]),
+            persistent_term:put(vmq_cluster_generation_ref, R),
+            R;
+        R -> R
+    end,
+    atomics:add(GenRef, 1, 1).
 
 %% @doc Migrate old 3-tuple ETS format to new 5-tuple.
 -spec migrate_old_format(tuple()) ->
@@ -401,4 +416,6 @@ shard_index_for_publish() ->
 shard_index_for_term({enqueue_many, SubscriberId, _, _}) ->
     erlang:phash2(SubscriberId) rem vmq_cluster_node_sup:pool_size();
 shard_index_for_term({enqueue, QueuePid, _}) ->
-    erlang:phash2(QueuePid) rem vmq_cluster_node_sup:pool_size().
+    erlang:phash2(QueuePid) rem vmq_cluster_node_sup:pool_size();
+shard_index_for_term(_Term) ->
+    erlang:phash2(self()) rem vmq_cluster_node_sup:pool_size().

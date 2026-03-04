@@ -115,7 +115,7 @@ terminate(_Reason, _State) ->
 
 code_change(_OldVsn, [], _Extra) ->
     TimerRef = schedule_gossip(normal),
-    {ok, #state{timer_ref = TimerRef}};
+    {ok, #state{timer_ref = TimerRef, mode = normal, fast_deadline = 0}};
 code_change(_OldVsn, State, _Extra) ->
     {ok, State}.
 
@@ -182,10 +182,11 @@ cancel_timer(undefined) ->
     ok;
 cancel_timer(Ref) ->
     _ = erlang:cancel_timer(Ref),
-    receive
-        gossip -> ok
-    after 0 ->
-        ok
+    flush_gossip().
+
+flush_gossip() ->
+    receive gossip -> flush_gossip()
+    after 0 -> ok
     end.
 
 gossip_interval() ->

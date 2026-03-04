@@ -291,6 +291,10 @@ register_subscriber_(SessionPid, SubscriberId, StartClean, QueueOpts, N, Reason)
                                     timeout ->
                                         %% Direct drain polling timed out. Fall back to
                                         %% metadata-driven path with conflict resolution.
+                                        %% Note: this write is idempotent; block_until/4 below
+                                        %% re-checks and only writes if subs differ, so the
+                                        %% apparent double-write is safe and necessary to ensure
+                                        %% metadata is persisted before entering the fallback.
                                         maybe_commit(NeedsWrite, SubscriberId, UpdatedSubs),
                                         block_until(
                                             SubscriberId, UpdatedSubs, ChangedNodes, BlockCondFun
@@ -376,9 +380,15 @@ register_subscriber_(SessionPid, SubscriberId, StartClean, QueueOpts, N, Reason)
 %% migrate dead queue (node down) to another node in cluster (including this one):
 %%
 %%    we have no local queue, but wait until the (offline) queue exists on target node.
-block_until(_, _, [], _) ->
+block_until(SubscriberId, UpdatedSubs, ChangedNodes, BlockCond) ->
+    block_until(SubscriberId, UpdatedSubs, ChangedNodes, BlockCond, ?MAX_BLOCK_UNTIL_ITERATIONS).
+
+block_until(_, _, [], _, _) ->
     ok;
-block_until(SubscriberId, UpdatedSubs, [Node | Rest] = ChangedNodes, BlockCond) ->
+block_until(_, _, _, _, 0) ->
+    ?LOG_WARNING("block_until exhausted iterations for subscriber"),
+    ok;
+block_until(SubscriberId, UpdatedSubs, [Node | Rest] = ChangedNodes, BlockCond, N) ->
     %% the call to subscriptions_for_subscriber_id will resolve any remaining
     %% conflicts to this entry by broadcasting the resolved value to the
     %% other nodes
@@ -394,9 +404,9 @@ block_until(SubscriberId, UpdatedSubs, [Node | Rest] = ChangedNodes, BlockCond) 
     case BlockCond(SubscriberId, Node) of
         block ->
             timer:sleep(100),
-            block_until(SubscriberId, UpdatedSubs, ChangedNodes, BlockCond);
+            block_until(SubscriberId, UpdatedSubs, ChangedNodes, BlockCond, N - 1);
         done ->
-            block_until(SubscriberId, UpdatedSubs, Rest, BlockCond)
+            block_until(SubscriberId, UpdatedSubs, Rest, BlockCond, N)
     end.
 
 -spec register_session(subscriber_id(), map()) ->
@@ -1249,15 +1259,32 @@ initiate_direct_migration(SubscriberId, LocalQPid, OldNode) ->
             %% Old queue already gone, nothing to migrate
             {ok, not_found};
         OldQPid when is_pid(OldQPid) ->
-            %% Spawn because vmq_queue:migrate/2 blocks until drain completes
+            %% Spawn because vmq_queue:migrate/2 blocks until drain completes.
+            %% Inner spawn_monitor adds a 30s timeout so a hanging migrate
+            %% doesn't leak processes; block_until_drain will timeout and
+            %% fall back to the metadata path regardless.
             spawn(fun() ->
                 try
-                    vmq_queue:migrate(OldQPid, LocalQPid)
-                catch
-                    Class:Reason ->
+                    {MPid, MRef} = spawn_monitor(fun() -> vmq_queue:migrate(OldQPid, LocalQPid) end),
+                    receive
+                        {'DOWN', MRef, process, MPid, normal} -> ok;
+                        {'DOWN', MRef, process, MPid, MigReason} ->
+                            ?LOG_WARNING(
+                                "direct migration failed for ~p from ~p: ~p",
+                                [SubscriberId, OldNode, MigReason]
+                            )
+                    after 30000 ->
+                        exit(MPid, kill),
                         ?LOG_WARNING(
-                            "direct migration failed for ~p from ~p: ~p:~p",
-                            [SubscriberId, OldNode, Class, Reason]
+                            "direct migration timeout for ~p from ~p",
+                            [SubscriberId, OldNode]
+                        )
+                    end
+                catch
+                    Class:Reason2 ->
+                        ?LOG_WARNING(
+                            "direct migration crashed for ~p from ~p: ~p:~p",
+                            [SubscriberId, OldNode, Class, Reason2]
                         )
                 end
             end),
@@ -1270,6 +1297,7 @@ initiate_direct_migration(SubscriberId, LocalQPid, OldNode) ->
 %% metadata on every iteration (unlike block_until/4). Falls back to
 %% the metadata-driven path if max iterations are exceeded.
 -define(MAX_DRAIN_POLL_ITERATIONS, 100).
+-define(MAX_BLOCK_UNTIL_ITERATIONS, 100).
 
 -spec block_until_drain(subscriber_id(), [{node(), pid() | not_found}], fun()) -> ok | timeout.
 block_until_drain(SubscriberId, NodePids, BlockCond) ->

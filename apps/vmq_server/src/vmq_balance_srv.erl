@@ -66,8 +66,6 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
-%% TODO: backport — use persistent_term for hot-path is_accepting check
-%% to avoid serializing every MQTT connect through a gen_server:call.
 -spec is_accepting() -> boolean().
 is_accepting() ->
     persistent_term:get({vmq_balance_srv, accepting}, true).
@@ -94,7 +92,9 @@ get_node_counts() ->
     try
         gen_server:call(?SERVER, get_node_counts, 2000)
     catch
-        _:_ -> #{node() => 0}
+        Class:Reason ->
+            ?LOG_WARNING("get_node_counts failed: ~p:~p", [Class, Reason]),
+            #{node() => 0}
     end.
 
 -spec incr_rejections() -> ok.

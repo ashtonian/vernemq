@@ -55,6 +55,9 @@ maybe_reject(SubscriberId) ->
                     accept;
                 not_found ->
                     vmq_balance_srv:incr_rejections(),
-                    reject
+                    reject;
+                _Other ->
+                    %% Defensive: allow on unexpected return
+                    accept
             end
     end.

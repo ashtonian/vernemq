@@ -17,6 +17,8 @@
 %% spawn_link for enqueue operations, and routing worker pool per
 %% connection (hash-sharded by {MP, Topic}). Consider bounded worker
 %% pool for enqueue path to cap concurrency.
+%% Note: routing worker pool size is fixed at startup (not configurable
+%% at runtime) because it is tied to the connection process lifecycle.
 -module(vmq_cluster_com).
 -include("vmq_server.hrl").
 -behaviour(ranch_protocol).
@@ -173,6 +175,7 @@ handle_message({ProtoClosed, _}, #st{proto_tag = {_, ProtoClosed, _}} = State) -
     {exit, normal, State};
 handle_message({ProtoErr, _, Error}, #st{proto_tag = {_, _, ProtoErr}} = State) ->
     {exit, Error, State};
+%% N is small (default 4), so tuple_to_list + lists:member is negligible.
 handle_message({'EXIT', WorkerPid, Reason}, #st{routing_workers = Workers} = State)
   when is_tuple(Workers) ->
     case lists:member(WorkerPid, tuple_to_list(Workers)) of

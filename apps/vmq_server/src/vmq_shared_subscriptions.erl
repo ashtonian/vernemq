@@ -34,17 +34,15 @@ publish(Msg, Policy, [{Group, []} | Rest], Acc) ->
     publish(Msg, Policy, Rest, Acc);
 publish(Msg, Policy, [{Group, SubscriberGroup} | Rest], Acc0) ->
     Subscribers = filter_subscribers(SubscriberGroup, Policy),
-    %% Randomize subscribers by picking a random starting point and rotating.
+    %% Fisher-Yates shuffle via sort on random keys for uniform distribution.
     RandSubscribers =
         case length(Subscribers) of
             0 ->
                 [];
             1 ->
                 Subscribers;
-            Len ->
-                Start = rand:uniform(Len),
-                {Tail, Head} = lists:split(Start, Subscribers),
-                Head ++ Tail
+            _ ->
+                [S || {_, S} <- lists:sort([{rand:uniform(), N} || N <- Subscribers])]
         end,
     case publish_to_group(Msg, RandSubscribers, Acc0) of
         {ok, Acc1} ->

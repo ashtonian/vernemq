@@ -354,21 +354,31 @@ init_async_inflight() ->
     persistent_term:put(vmq_webhooks_async_rr, RRRef).
 
 async_call_endpoint(Endpoint, EOpts, HookName, Args) ->
-    Ref = persistent_term:get(vmq_webhooks_async_inflight),
-    MaxInflight = persistent_term:get(vmq_webhooks_async_pool_size, 100),
-    case atomics:add_get(Ref, 1, 1) of
-        N when N > MaxInflight ->
-            atomics:sub(Ref, 1, 1),
-            vmq_webhooks_metrics:incr(HookName, errors),
-            ?LOG_WARNING(
-                "webhook async pool exhausted (~p/~p), dropping ~p notification",
-                [N - 1, MaxInflight, HookName]
-            );
-        _ ->
-            RRRef = persistent_term:get(vmq_webhooks_async_rr),
-            Idx = atomics:add_get(RRRef, 1, 1) rem MaxInflight,
-            vmq_webhooks_async_worker:worker_name(Idx) !
-                {call_endpoint, Endpoint, EOpts, HookName, Args, Ref}
+    case persistent_term:get(vmq_webhooks_async_inflight, undefined) of
+        undefined ->
+            ?LOG_WARNING("async webhook inflight not initialized, dropping ~p", [HookName]);
+        Ref ->
+            MaxInflight = persistent_term:get(vmq_webhooks_async_pool_size, 100),
+            case atomics:add_get(Ref, 1, 1) of
+                N when N > MaxInflight ->
+                    atomics:sub(Ref, 1, 1),
+                    vmq_webhooks_metrics:incr(HookName, errors),
+                    ?LOG_WARNING(
+                        "webhook async pool exhausted (~p/~p), dropping ~p notification",
+                        [N - 1, MaxInflight, HookName]
+                    );
+                _ ->
+                    RRRef = persistent_term:get(vmq_webhooks_async_rr),
+                    Idx = atomics:add_get(RRRef, 1, 1) rem MaxInflight,
+                    try
+                        vmq_webhooks_async_worker:worker_name(Idx) !
+                            {call_endpoint, Endpoint, EOpts, HookName, Args, Ref}
+                    catch
+                        error:badarg ->
+                            %% Worker not registered (crashed/restarting), undo counter
+                            atomics:sub(Ref, 1, 1)
+                    end
+            end
     end.
 
 %%%===================================================================

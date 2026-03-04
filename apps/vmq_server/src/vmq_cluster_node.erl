@@ -276,7 +276,10 @@ evict_until_fits(MsgSize, OutFun, #state{q0 = Q0, q12 = Q12, q_size = QSize, max
 %% Extract QoS from the term for buffer priority classification.
 extract_qos(#vmq_msg{qos = QoS}) -> QoS;
 extract_qos({enqueue_many, _, [{deliver, QoS, _} | _], _}) -> QoS;
-extract_qos(_) -> 1.
+extract_qos(Unknown) ->
+    ?LOG_DEBUG("extract_qos: unknown msg format, defaulting to QoS 1: ~p",
+               [try element(1, Unknown) catch _:_ -> Unknown end]),
+    1.
 
 handle_message(
     {enq, CallerPid, Ref, _, BufferIfUnreachable},
@@ -551,7 +554,7 @@ reconnect_timer(Count) ->
     Delay = reconnect_delay(Count),
     %% Add +/- 20% jitter to prevent synchronized reconnect storms.
     Jitter = Delay div 5,
-    JitteredDelay = Delay - Jitter + rand:uniform(2 * Jitter + 1) - 1,
+    JitteredDelay = max(100, Delay - Jitter + rand:uniform(2 * Jitter + 1) - 1),
     erlang:send_after(JitteredDelay, self(), reconnect).
 
 %% connect_params is called by a RPC

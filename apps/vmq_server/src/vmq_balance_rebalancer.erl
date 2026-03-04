@@ -270,7 +270,7 @@ execute_rebalance_rounds(Disconnected, Rounds, _Seen) when Rounds >= ?MAX_ROUNDS
 execute_rebalance_rounds(Disconnected, Rounds, Seen) ->
     NodeCounts = vmq_balance_srv:get_node_counts(),
     TotalConns = maps:fold(fun(_N, C, Acc) -> Acc + C end, 0, NodeCounts),
-    NumNodes = map_size(NodeCounts),
+    NumNodes = max(1, map_size(NodeCounts)),
     case NumNodes of
         N when N =< 1 ->
             {ok, {Disconnected, Rounds}};
