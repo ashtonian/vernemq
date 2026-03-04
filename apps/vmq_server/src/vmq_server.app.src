@@ -138,6 +138,8 @@
         % Cluster readiness quorum (1.0 = all nodes must be alive)
         {cluster_ready_quorum, 1.0},
 
+        {dead_node_cleanup_timeout, 0},
+
         % Systree
         {systree_enabled, true}
         %{systree_interval, 20000},

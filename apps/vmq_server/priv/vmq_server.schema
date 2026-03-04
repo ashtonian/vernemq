@@ -2397,6 +2397,16 @@
                                                                                                         hidden
                                                                                                        ]}.
 
+%% @doc Timeout in seconds before a dead cluster node's subscriptions
+%% are automatically cleaned up. Set to 0 to disable (default).
+%% Requires a quorum of cluster nodes to be reachable to prevent
+%% cleanup during netsplits. 2-node clusters cannot auto-clean.
+{mapping, "dead_node_cleanup_timeout", "vmq_server.dead_node_cleanup_timeout", [
+                                                                                 {default, 0},
+                                                                                 {datatype, integer},
+                                                                                 {commented, 300}
+                                                                                ]}.
+
 %% @doc Retain Cache expiry cleanup in seconds
 %% Cleanup expired retained messages
 %% (set by the publisher using message-expiry-interval). 

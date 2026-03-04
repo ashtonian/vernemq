@@ -66,7 +66,8 @@ register_config_() ->
             "mqtt_connect_timeout",
             "disconnect_on_unauthorized_publish_v3",
             "subscriber_retain_mode",
-            "cluster_ready_quorum"
+            "cluster_ready_quorum",
+            "dead_node_cleanup_timeout"
         ],
     _ = [
         clique:register_config([Key], fun register_config_callback/2)
