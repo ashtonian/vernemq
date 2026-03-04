@@ -165,7 +165,8 @@ if_ready(Mod, Fun, Args) ->
     end.
 
 publish(Node, Msg) ->
-    case vmq_cluster_node_sup:get_cluster_node(Node) of
+    ShardIdx = shard_index_for_publish(),
+    case vmq_cluster_node_sup:get_cluster_node(Node, ShardIdx) of
         {error, not_found} ->
             {error, not_found};
         {ok, Pid} ->
@@ -200,7 +201,8 @@ when
     BufferIfUnreachable :: boolean(),
     Timeout :: non_neg_integer() | infinity.
 remote_enqueue(Node, Term, BufferIfUnreachable, Timeout) ->
-    case vmq_cluster_node_sup:get_cluster_node(Node) of
+    ShardIdx = shard_index_for_term(Term),
+    case vmq_cluster_node_sup:get_cluster_node(Node, ShardIdx) of
         {error, not_found} ->
             {error, not_found};
         {ok, Pid} ->
@@ -208,7 +210,8 @@ remote_enqueue(Node, Term, BufferIfUnreachable, Timeout) ->
     end.
 
 remote_enqueue_async(Node, Term, BufferIfUnreachable) ->
-    case vmq_cluster_node_sup:get_cluster_node(Node) of
+    ShardIdx = shard_index_for_term(Term),
+    case vmq_cluster_node_sup:get_cluster_node(Node, ShardIdx) of
         {error, not_found} ->
             {error, not_found};
         {ok, Pid} ->
@@ -370,3 +373,11 @@ log_transition(Same, Same) ->
     ok;
 log_transition(OldTier, NewTier) ->
     ?LOG_WARNING("cluster tier changed: ~p -> ~p", [OldTier, NewTier]).
+
+shard_index_for_publish() ->
+    erlang:phash2(self()) rem vmq_cluster_node_sup:pool_size().
+
+shard_index_for_term({enqueue_many, SubscriberId, _, _}) ->
+    erlang:phash2(SubscriberId) rem vmq_cluster_node_sup:pool_size();
+shard_index_for_term({enqueue, QueuePid, _}) ->
+    erlang:phash2(QueuePid) rem vmq_cluster_node_sup:pool_size().

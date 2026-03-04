@@ -380,6 +380,17 @@
                                                                                                           {datatype, {enum, [lifo, fifo]}},
                                                                                                           hidden
                                                                                                          ]}.
+
+%% @doc specifies the number of outgoing TCP connections per remote cluster node.
+%% Higher values distribute inter-node message traffic across multiple
+%% connections, reducing single-process serialization bottlenecks.
+%% Messages are sharded across connections to maintain per-subscriber ordering.
+%% Requires node restart to take effect.
+{mapping, "outgoing_clustering_connection_count", "vmq_server.outgoing_clustering_connection_count", [
+                                                                                                      {default, 4},
+                                                                                                      {datatype, integer},
+                                                                                                      hidden
+                                                                                                     ]}.
 %% @doc specifies the timeout for enqueuing something in a queue on a remote node.
 {mapping, "remote_enqueue_timeout", "vmq_server.remote_enqueue_timeout", [
                                                                           {default, 5000},
