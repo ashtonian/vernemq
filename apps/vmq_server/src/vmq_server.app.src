@@ -113,6 +113,7 @@
         {outgoing_clustering_reconnect_max_delay, 30000},
         {outgoing_clustering_buffer_drop_policy, lifo},
         {remote_enqueue_timeout, 5000},
+        {cluster_ready_rpc_timeout, 5000},
         {outgoing_connect_options, []},
         {outgoing_connect_params_module, vmq_cluster_node},
         {outgoing_connect_timeout, 10000},
