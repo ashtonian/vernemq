@@ -1,37 +1,31 @@
 ## VerneMQ 2.1.2
 
-- Enhancement: automatic dead node subscription cleanup with configurable timeout and quorum-based netsplit protection.
-- HTTP status page: Full-page container for improved status page view - especially helpful on wider monitors.
-- XFF/WebSockets: Adapt the XFF trusted proxy validation to check against proxy IP, not last peer in XFF header.
-- vmq_reg_trie: Move from genserver2 to genserver for improved memory management.
-- Logging: Rejected/failed Subscribes are now logged as errors with SubscriberId and Peer info.
-- Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
-- Enhancement: Don't log msg payload in pubauth errors.
-- Bugfix: active connections count for WS in metrics and listener info.
+- Enhancement: Automatic dead node subscription cleanup with configurable timeout and quorum-based netsplit protection.
 - Enhancement: Increase default cluster communication watermarks from 8KB to 1MB (high) and 4KB to 512KB (low) to reduce flow-control oscillation and improve inter-node throughput under load.
-||||||| a855c08a
-- Enhancement: replace modulo-based sync node selection in vmq_reg_sync with consistent hash ring to prevent key remapping during cluster membership changes.
-||||||| a855c08a
+- Enhancement: Replace modulo-based sync node selection in vmq_reg_sync with consistent hash ring to prevent key remapping during cluster membership changes.
 - Enhancement: vmq_cluster_node: Add configurable buffer drop policy (outgoing_clustering_buffer_drop_policy) with QoS-aware eviction. Both modes evict QoS 0 messages before QoS 1/2. 'lifo' (default) evicts newest buffered messages first; 'fifo' evicts oldest first.
-||||||| a855c08a
-- Enhancement: replace modulo-based sync node selection in vmq_reg_sync with consistent hash ring to prevent key remapping during cluster membership changes.
-||||||| a855c08a
-- Bugfix: vmq_reg: Fix message loss window during queue migration when client reconnects to a different node. Metadata is now written after the old queue starts draining instead of before, preventing out-of-order delivery.
-||||||| a855c08a
-- Enhancement: Parallel cluster readiness checks via erpc:multicall (5s total worst-case vs N*5s). New hidden setting: cluster_ready_rpc_timeout
-||||||| a855c08a
+- Enhancement: Parallel cluster readiness checks via erpc:multicall (5s total worst-case vs N*5s). New hidden setting: cluster_ready_rpc_timeout.
 - Enhancement: Optimize shared subscription subscriber selection from O(N log N) sort to O(N) list rotation.
-||||||| a855c08a
-- vmq_swc: Add adaptive fast gossip mode for faster membership convergence after cluster changes
-||||||| a855c08a
-- vmq_swc: Add adaptive fast gossip mode for faster membership convergence after cluster changes
-
-||||||| a855c08a
-
+- Enhancement: Don't log msg payload in pubauth errors.
+- Enhancement: vmq_swc: Add adaptive fast gossip mode for faster membership convergence after cluster changes.
+- Enhancement: vmq_reg_trie: Shard subscription trie across configurable worker pool (reg_trie_workers) and move from genserver2 to genserver for improved memory management and throughput.
+- Enhancement: Shard vmq_reg_sync across configurable worker pool (reg_sync_shards) to reduce contention during reconnection storms.
+- Enhancement: Offload cluster_com routing to dedicated worker process and add async publish path to reduce TCP parsing bottlenecks.
+- Enhancement: Add connection pool per cluster node (outgoing_clustering_connection_count) with subscriber-based sharding to distribute inter-node traffic across multiple connections.
+- Enhancement: Exponential backoff for cluster node reconnect with configurable base and max delay (outgoing_clustering_reconnect_base_delay, outgoing_clustering_reconnect_max_delay).
+- Enhancement: Tiered cluster health monitoring (healthy/degraded/partitioned) with configurable quorum threshold (cluster_ready_quorum) and degraded/netsplit transition counters.
+- Enhancement: Cluster auto-balance: load-aware connection routing via HTTP endpoint for external load balancers, with configurable threshold and hysteresis.
+- Enhancement: Cluster auto-balance reject hook: allow VerneMQ to reject new connections when local node is overloaded relative to cluster average.
+- Enhancement: Active rebalancer: automatic and on-demand session rebalancing across cluster nodes (vmq-admin balance rebalance) with configurable threshold, batch size, and cooldown.
+- Enhancement: vmq_webhooks: Add msgpack serialization support, webhook response caching, and SSL improvements.
+- Enhancement: HTTP status page: Full-page container for improved status page view - especially helpful on wider monitors.
+- Enhancement: XFF/WebSockets: Adapt the XFF trusted proxy validation to check against proxy IP, not last peer in XFF header.
+- Enhancement: Logging: Rejected/failed Subscribes are now logged as errors with SubscriberId and Peer info.
+- Bugfix: vmq_reg: Fix message loss window during queue migration when client reconnects to a different node. Metadata is now written after the old queue starts draining instead of before, preventing out-of-order delivery.
 - Bugfix: Fix silent subscription loss during concurrent subscribes across cluster nodes by using set-union merge instead of LWW for subscriber metadata conflict resolution.
-||||||| a855c08a
-
-- Bugfix: closed connection count for mqtt listeners when there is an exception in the connection loop.
+- Bugfix: MQTT Session FSMs now send out SUBACKs for any error clause.
+- Bugfix: Active connections count for WS in metrics and listener info.
+- Bugfix: Closed connection count for mqtt listeners when there is an exception in the connection loop.
 
 ## VerneMQ 2.1.1
 
