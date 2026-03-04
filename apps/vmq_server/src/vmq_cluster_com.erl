@@ -165,6 +165,12 @@ handle_message({ProtoErr, _, Error}, #st{proto_tag = {_, _, ProtoErr}} = State) 
 handle_message({'EXIT', WorkerPid, Reason}, #st{routing_worker = WorkerPid} = State) ->
     ?LOG_WARNING("cluster_com routing worker died: ~p", [Reason]),
     {exit, {routing_worker_died, Reason}, State};
+handle_message({'EXIT', _Pid, normal}, State) ->
+    %% enqueue worker finished normally
+    State;
+handle_message({'EXIT', _Pid, Reason}, State) ->
+    ?LOG_DEBUG("cluster_com enqueue worker died: ~p", [Reason]),
+    State;
 handle_message({'DOWN', _, process, _ClusterNodePid, Reason}, State) ->
     {exit, Reason, State}.
 
@@ -203,7 +209,7 @@ process(<<"enq", L:32, Bin:L/binary, Rest/binary>>, St) ->
             %% enqueue in own process context
             %% to ensure that this won't block
             %% the cluster communication.
-            spawn(fun() ->
+            spawn_link(fun() ->
                 try
                     Reply = vmq_queue:enqueue_many(QueuePid, to_vmq_msgs(Msgs)),
                     CallerPid ! {Ref, Reply}
@@ -216,12 +222,14 @@ process(<<"enq", L:32, Bin:L/binary, Rest/binary>>, St) ->
             %% enqueue in own process context
             %% to ensure that this won't block
             %% the cluster communication.
-            spawn(fun() ->
+            spawn_link(fun() ->
                 try
                     case vmq_queue_sup_sup:get_queue_pid(SubscriberId) of
                         QueuePid when is_pid(QueuePid) ->
                             Reply = vmq_queue:enqueue_many(QueuePid, Msgs, Opts),
-                            CallerPid ! {Ref, Reply}
+                            CallerPid ! {Ref, Reply};
+                        _ ->
+                            CallerPid ! {Ref, {error, cant_remote_enqueue}}
                     end
                 catch
                     _:_ ->
