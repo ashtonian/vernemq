@@ -38,6 +38,7 @@
 -define(SUBSCRIBER_DB, {vmq, subscriber}).
 
 start() ->
+    cache_subscriber_resolver(),
     application:ensure_all_started(vmq_plumtree).
 
 stop() ->
@@ -116,13 +117,18 @@ metadata_fold(FullPrefix, Fun, Acc) ->
 metadata_subscribe(FullPrefix) ->
     plumtree_metadata_manager:subscribe(FullPrefix).
 
+%% TODO: backport persistent_term resolver caching to upstream
 resolver_for_prefix(?SUBSCRIBER_DB) ->
-    case application:get_env(vmq_plumtree, subscription_resolver, set_union) of
-        set_union -> fun subscription_merge/2;
-        lww -> lww
-    end;
+    persistent_term:get({?MODULE, subscriber_resolver}, fun subscription_merge/2);
 resolver_for_prefix(_) ->
     lww.
+
+cache_subscriber_resolver() ->
+    ResolverFun = case application:get_env(vmq_plumtree, subscription_resolver, set_union) of
+        set_union -> fun subscription_merge/2;
+        lww -> lww
+    end,
+    persistent_term:put({?MODULE, subscriber_resolver}, ResolverFun).
 
 subscription_merge(Subs1, Subs2) when is_list(Subs1), is_list(Subs2) ->
     merge_subs(Subs1, Subs2);

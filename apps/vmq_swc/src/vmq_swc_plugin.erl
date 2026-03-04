@@ -50,6 +50,7 @@
 plugin_start() ->
     SWCGroups = [list_to_atom("meta" ++ integer_to_list(X)) || X <- lists:seq(1, ?NR_OF_GROUPS)],
     ok = persistent_term:put(?INFO_KEY, {?NR_OF_GROUPS, SWCGroups}),
+    cache_subscriber_resolver(),
     _ = application:ensure_all_started(vmq_swc),
     _ = [vmq_swc:start(G) || G <- SWCGroups],
     ok.
@@ -215,13 +216,18 @@ lww_resolver(TimestampedVals) ->
 extract_val({_Ts, Val}) -> Val;
 extract_val(undefined) -> undefined.
 
+%% TODO: backport persistent_term resolver caching to upstream
 resolver_for_prefix(?SUBSCRIBER_DB) ->
-    case application:get_env(vmq_swc, subscription_resolver, set_union) of
-        set_union -> fun subscription_resolver/1;
-        lww -> fun lww_resolver/1
-    end;
+    persistent_term:get({?MODULE, subscriber_resolver}, fun subscription_resolver/1);
 resolver_for_prefix(_) ->
     fun lww_resolver/1.
+
+cache_subscriber_resolver() ->
+    ResolverFun = case application:get_env(vmq_swc, subscription_resolver, set_union) of
+        set_union -> fun subscription_resolver/1;
+        lww -> fun lww_resolver/1
+    end,
+    persistent_term:put({?MODULE, subscriber_resolver}, ResolverFun).
 
 subscription_resolver([]) ->
     undefined;
