@@ -303,7 +303,8 @@ handle_message({msg, CallerPid, Ref, Msg}, State) ->
     Bin = term_to_binary(Msg),
     L = byte_size(Bin),
     BinMsg = <<"msg", L:32, Bin/binary>>,
-    {Dropped, NewState} = buffer_message(BinMsg, 1, State),
+    QoS = extract_qos(Msg),
+    {Dropped, NewState} = buffer_message(BinMsg, QoS, State),
     case Dropped > 0 of
         true ->
             CallerPid ! {Ref, {error, msg_dropped}};
@@ -315,7 +316,8 @@ handle_message({msg_async, Msg}, State) ->
     Bin = term_to_binary(Msg),
     L = byte_size(Bin),
     BinMsg = <<"msg", L:32, Bin/binary>>,
-    {_Dropped, NewState} = buffer_message(BinMsg, 1, State),
+    QoS = extract_qos(Msg),
+    {_Dropped, NewState} = buffer_message(BinMsg, QoS, State),
     NewState;
 handle_message(
     {connect_async_done, AsyncPid, {ok, {Transport, Socket}}},
