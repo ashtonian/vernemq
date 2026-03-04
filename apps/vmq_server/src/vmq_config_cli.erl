@@ -67,13 +67,25 @@ register_config_() ->
             "disconnect_on_unauthorized_publish_v3",
             "subscriber_retain_mode",
             "cluster_ready_quorum",
-            "dead_node_cleanup_timeout"
+            "dead_node_cleanup_timeout",
+            "balance_enabled",
+            "balance_threshold",
+            "balance_hysteresis",
+            "balance_min_connections",
+            "balance_check_interval",
+            "balance_reject_enabled",
+            "rebalance_enabled",
+            "rebalance_threshold",
+            "rebalance_batch_size",
+            "rebalance_cooldown",
+            "rebalance_on_node_join",
+            "rebalance_stable_interval",
+            "rebalance_auto_interval"
         ],
     _ = [
         clique:register_config([Key], fun register_config_callback/2)
      || Key <- ConfigKeys
     ],
-    [clique:register_config([Key], fun register_config_callback/2) || Key <- ConfigKeys],
     ok = clique:register_config_whitelist(ConfigKeys).
 
 -spec register_cli_usage() -> true.

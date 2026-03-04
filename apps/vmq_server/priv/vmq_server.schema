@@ -2418,3 +2418,116 @@
                                                              {commented, 60},
                                                              {datatype, integer}
                                                             ]}.
+
+%% @doc Enable cluster auto-balancing. When enabled, VerneMQ monitors
+%% connection distribution across cluster nodes and can reject new
+%% connections on overloaded nodes via the /api/balance-health HTTP endpoint.
+%% Default is off — no behavioral change for existing deployments.
+{mapping, "balance_enabled", "vmq_server.balance_enabled", [
+    {default, off},
+    {datatype, flag}
+]}.
+
+%% @doc Enable active MQTT connection rejection on overloaded nodes.
+%% Requires balance_enabled = on. When on, overloaded nodes reject new
+%% MQTT connections with CONNACK error (0x05 for v3.1.1, server_busy for v5).
+%% Existing sessions are still allowed to reconnect.
+%% When off, the balance system only monitors and exposes the HTTP health
+%% endpoint without actively rejecting connections.
+%% Default is off.
+{mapping, "balance_reject_enabled", "vmq_server.balance_reject_enabled", [
+    {default, off},
+    {datatype, flag}
+]}.
+
+%% @doc Threshold above cluster average before rejecting new connections.
+%% A value of 1.2 means a node will stop accepting when it has 20% more
+%% connections than the cluster average. Specified as a string to support
+%% decimal values (e.g. "1.2").
+{mapping, "balance_threshold", "vmq_server.balance_threshold", [
+    {default, "1.2"},
+    {datatype, string}
+]}.
+
+%% @doc Hysteresis to prevent readiness flapping. Node re-accepts when
+%% connections drop below avg * (threshold - hysteresis). Specified as
+%% a string to support decimal values (e.g. "0.1").
+{mapping, "balance_hysteresis", "vmq_server.balance_hysteresis", [
+    {default, "0.1"},
+    {datatype, string}
+]}.
+
+%% @doc Minimum total cluster connections before balancing activates.
+%% Below this, all nodes accept regardless of distribution.
+{mapping, "balance_min_connections", "vmq_server.balance_min_connections", [
+    {default, 100},
+    {datatype, integer}
+]}.
+
+%% @doc Interval in milliseconds between balance checks.
+{mapping, "balance_check_interval", "vmq_server.balance_check_interval", [
+    {default, 5000},
+    {datatype, integer},
+    {validators, ["positive-integer"]}
+]}.
+
+%% @doc Enable active session rebalancing. When enabled, the rebalancer
+%% can disconnect excess sessions on overloaded nodes so they reconnect
+%% through the load balancer to underloaded nodes.
+%% Default is off.
+{mapping, "rebalance_enabled", "vmq_server.rebalance_enabled", [
+    {default, off},
+    {datatype, flag}
+]}.
+
+%% @doc Ratio above cluster average before rebalancing disconnects sessions.
+%% A value of 1.3 means a node must have 30% more connections than the
+%% cluster average before sessions are disconnected. Specified as a string
+%% to support decimal values (e.g. "1.3").
+{mapping, "rebalance_threshold", "vmq_server.rebalance_threshold", [
+    {default, "1.3"},
+    {datatype, string}
+]}.
+
+%% @doc Maximum number of sessions to disconnect per rebalance round.
+{mapping, "rebalance_batch_size", "vmq_server.rebalance_batch_size", [
+    {default, 50},
+    {datatype, integer}
+]}.
+
+%% @doc Cooldown period in seconds between rebalance rounds.
+{mapping, "rebalance_cooldown", "vmq_server.rebalance_cooldown", [
+    {default, 30},
+    {datatype, integer}
+]}.
+
+%% @doc Automatically trigger rebalance when a new node joins the cluster
+%% and the cluster has been stable for rebalance_stable_interval seconds.
+%% Default is off.
+{mapping, "rebalance_on_node_join", "vmq_server.rebalance_on_node_join", [
+    {default, off},
+    {datatype, flag}
+]}.
+
+%% @doc Minimum number of seconds the cluster must be stable (no node
+%% joins or leaves) before a rebalance is allowed. Used to avoid
+%% rebalancing during rolling deployments.
+{mapping, "rebalance_stable_interval", "vmq_server.rebalance_stable_interval", [
+    {default, 60},
+    {datatype, integer}
+]}.
+
+%% @doc Interval in seconds for periodic auto-rebalance checks. When
+%% set to a value greater than 0, the rebalancer will periodically
+%% check if the local node is over the rebalance threshold and
+%% disconnect excess sessions. Requires both balance_enabled and
+%% rebalance_enabled to be on. Set to 0 to disable.
+{mapping, "rebalance_auto_interval", "vmq_server.rebalance_auto_interval", [
+    {default, 0},
+    {datatype, integer}
+]}.
+
+{validator, "positive-integer", "must be a positive integer",
+ fun(Integer) ->
+         Integer > 0
+ end}.
