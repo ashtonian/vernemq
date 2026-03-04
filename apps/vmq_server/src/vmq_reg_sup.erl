@@ -126,7 +126,7 @@ init([]) ->
             ?CHILD(vmq_reg_mgr, vmq_reg_mgr, worker, []),
             ?CHILD(vmq_retain_srv, vmq_retain_srv, worker, []),
             ?CHILD(vmq_reg_sync_action_sup, vmq_reg_sync_action_sup, supervisor, []),
-            ?CHILD(vmq_reg_sync, vmq_reg_sync, worker, [])
+            ?CHILD(vmq_reg_sync_sup, vmq_reg_sync_sup, supervisor, [])
         ]}}.
 
 %%%===================================================================
