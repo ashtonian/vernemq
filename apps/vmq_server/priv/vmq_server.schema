@@ -34,6 +34,28 @@
                                                                                                 {datatype, flag}
                                                                                                ]}.
 
+%% @doc The fraction of cluster nodes that must be reachable for the cluster
+%% to be considered ready. Set to 1.0 (default) for the legacy all-or-nothing
+%% behavior. Lower values (e.g., 0.5 for majority quorum) enable a "degraded"
+%% tier where operations continue even with some unreachable nodes.
+{mapping, "cluster_ready_quorum", "vmq_server.cluster_ready_quorum", [
+                                                                       {default, "1.0"},
+                                                                       {datatype, string}
+                                                                      ]}.
+
+{translation, "vmq_server.cluster_ready_quorum",
+ fun(Conf) ->
+     Val = cuttlefish:conf_get("cluster_ready_quorum", Conf),
+     case string:to_float(Val) of
+         {F, []} when F > 0.0, F =< 1.0 -> F;
+         _ ->
+             case string:to_integer(Val) of
+                 {1, []} -> 1.0;
+                 _ -> cuttlefish:invalid("cluster_ready_quorum must be a float in (0.0, 1.0]")
+             end
+     end
+ end}.
+
 %% @doc Client registrations can be either happen in a coordinated or
 %% uncoordinated fashion. Uncoordinated registrations are faster and
 %% will cause other clients with the same client-id to be eventually
