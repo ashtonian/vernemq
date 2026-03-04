@@ -1,0 +1,55 @@
+# TODO
+
+- [ ] Merge upstream VerneMQ changes into integration_test branch
+- [ ] Fix `outgoing_clustering_reconnect_max_delay` default mismatch between app.src (was 30000, now 10000) and schema (10000) — verify schema value is correct
+- [ ] Add cuttlefish schema entry for `vmq_plumtree.subscription_resolver` (currently only configurable via `application:set_env`)
+- [ ] Fix pre-existing bug: `vmq_http_pub.app.src` references `vmq_http_pub_sub` module (should be `vmq_http_pub_sup`) — silent metric loss
+- [ ] Fix pre-existing bug: `vmq_ql_query_sup.erl` child spec modules list references `vmq_ql_query_action` (should be `vmq_ql_query`)
+- [ ] Fix pre-existing bug: `vmq_web_ui.app.src` references `vmq_web_ui_sup:metrics/0` which doesn't exist — silent metric loss
+- [ ] Consider bounded worker pool for `vmq_cluster_com.erl` enqueue spawns (currently spawn_link, was bare spawn — leak fixed but unbounded concurrency remains)
+- [ ] Consider using `{float, ...}` cuttlefish datatype for `balance_threshold`, `balance_hysteresis`, `rebalance_threshold`, `cluster_ready_quorum` instead of string-to-float parsing
+- [ ] Backport `persistent_term` resolver caching in `vmq_swc_plugin.erl` and `vmq_plumtree.erl` to upstream (eliminates per-read `application:get_env` overhead)
+- [ ] Re-run A/B benchmark after recovery delay fixes to validate improvement
+- [ ] Backport `vmq_balance_srv` persistent_term optimization — `is_accepting/0` now reads persistent_term instead of gen_server:call on every MQTT connect
+- [ ] Backport `vmq_cluster` generation counter and `vmq_reg_sync` ring caching — avoids `lists:sort(vmq_cluster:nodes())` ETS scan on every sync call
+- [x] Backport `vmq_reg` — cache RPC result from `initiate_direct_migration` for use in `BlockCondFun` to avoid duplicate RPC to same node (implemented: `initiate_direct_migration` returns `{ok, OldQPid | not_found}`, cached PIDs passed through `block_until_drain`)
+- [ ] Backport `vmq_reg_trie` `lookup_subs/1` — use `ets:match_object` instead of `ets:select` with dynamically constructed match spec
+- [x] Backport `vmq_webhooks_plugin` — worker pool for async webhooks to reduce spawn churn (implemented: N long-lived `vmq_webhooks_async_worker` processes under `vmq_webhooks_sup`, round-robin dispatch, atomics inflight bound preserved)
+- [x] Backport `vmq_cluster_com` — routing worker pool per connection (implemented: N workers hash-sharded by `{MP, Topic}` to preserve per-topic ordering, configurable via `cluster_routing_workers`, default 4)
+- [ ] Backport `vmq_cluster_node` `internal_flush` — use nested iolist instead of `queue:to_list ++ queue:to_list` concatenation
+
+## Code Review Fixes (C1-C7, H1-H8, M1-M9, L1-L8)
+
+- [x] C1: Fix `vmq_cluster:publish_async` — add shard index selection (was routing all async publishes to connection 0)
+- [x] C2: Fix `vmq_cluster:shard_index_for_term` — add default clause to prevent function_clause crash
+- [x] C3: Fix `vmq_cluster` generation counter — use atomics for thread-safe increment
+- [x] C4: Fix `vmq_cluster_node:reconnect_timer` — clamp minimum jittered delay to 100ms
+- [x] C5: Fix `vmq_shared_subscriptions` — restore Fisher-Yates shuffle (rotation was not random)
+- [x] C6: Fix `vmq_reg_trie_worker:insert_trie_subs` — document ordering invariant (data before marker)
+- [x] C7: Fix `vmq_reg_trie_worker:del_trie_subs` — document accepted ETS race window
+- [x] H1: Fix `vmq_reg` timeout fallback — document idempotent double-write safety
+- [x] H2: Fix `vmq_reg:initiate_direct_migration` — add 30s timeout on spawned migration
+- [x] H3: Fix `vmq_reg:block_until` — add iteration limit (100) to prevent infinite loop
+- [x] H4: Fix `vmq_webhooks:async_call_endpoint` — wrap send in try for counter safety
+- [x] H5: `vmq_cluster_mon:do_cleanup_` — already spawned (no fix needed, verified)
+- [x] H6: Duplicate `merge_subs`/`merge_node_subs` in vmq_plumtree + vmq_swc — kept in sync with comments (extraction deferred)
+- [x] H7: Fix `vmq_consistent_hash:lookup` — handle empty ring gracefully in vmq_reg_sync caller
+- [x] H8: Fix `vmq_webhooks:async_call_endpoint` — add default for uninitialized inflight ref
+- [x] M1: `vmq_cluster_com` EXIT handler `tuple_to_list` — N is small, added comment
+- [x] M2: `vmq_cluster_com` routing worker pool not runtime-configurable — by design, added comment
+- [x] M3: Fix `vmq_balance_srv:get_node_counts` — log errors instead of silently swallowing
+- [x] M4: Fix `vmq_balance_rebalancer` — guard against divide-by-zero in NumNodes
+- [x] M5: Fix `vmq_swc_peer_service_gossip:cancel_timer` — flush all stale gossip messages
+- [x] M6: Fix `vmq_swc_peer_service_gossip:code_change` — initialize all state fields
+- [x] M7: `vmq_reg_sync` ring rebuild race — benign (idempotent), no fix needed
+- [x] M8: Fix `vmq_webhooks_sup` — scale supervisor intensity with pool size
+- [x] M9: Fix `vmq_balance_hook` — add catch-all for unexpected get_queue_pid return
+- [x] L1: Fix `vmq_balance_http` — add try-catch for JSON encoding
+- [x] L2: Fix `vmq_cluster` — add warnings in statistics catch-all cases
+- [x] L3: Fix `vmq_cluster_node:extract_qos` — add debug log for unknown formats
+- [x] L4: `vmq_balance_cli:keymember` — correct for clique boolean flags, no fix needed
+- [x] L5: Fix `vmq_reg_trie_worker:add_complex_topic_cas` — add yield on CAS retry
+- [x] L6: `vmq_webhooks` pool size cached at startup — known limitation, by design
+- [x] L7: Fix `vmq_balance_srv` — remove stale TODO comment
+- [x] L8: `vmq_cluster_com` TODO updated with routing worker pool status
+- [ ] Consider extracting duplicate merge_subs/merge_node_subs to shared module (vmq_plumtree + vmq_swc)
