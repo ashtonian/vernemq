@@ -13,6 +13,9 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% TODO: merge upstream — this module adds connection pooling, exponential
+%% backoff with jitter, nodeup-triggered backoff reset, and staggered
+%% initial pool connections. Reconcile with any upstream changes.
 -module(vmq_cluster_node).
 -include("vmq_server.hrl").
 -include_lib("kernel/include/logger.hrl").
@@ -25,7 +28,8 @@
     enqueue/4,
     enqueue_async/3,
     connect_params/1,
-    status/1
+    status/1,
+    reset_backoff/1
 ]).
 
 %% gen_server callbacks
@@ -59,8 +63,9 @@
     bytes_send = {os:timestamp(), 0}
 }).
 
+%% TODO: backport these defaults to vmq_server.app.src and vmq_server.schema
 -define(DEFAULT_RECONNECT_BASE, 1000).
--define(DEFAULT_RECONNECT_MAX, 10000).
+-define(DEFAULT_RECONNECT_MAX, 5000).
 
 %%%===================================================================
 %%% API
@@ -129,6 +134,12 @@ status(Pid) ->
             {error, Reason}
     end.
 
+%% Reset backoff and attempt immediate reconnection. Called by
+%% vmq_cluster_mon on nodeup to avoid waiting for a long backoff timer.
+reset_backoff(Pid) ->
+    Pid ! reset_backoff,
+    ok.
+
 init([Parent, RemoteNode, PoolIdx]) ->
     MaxQueueSize = vmq_config:get_env(outgoing_clustering_buffer_size),
     DropPolicy = vmq_config:get_env(outgoing_clustering_buffer_drop_policy),
@@ -138,9 +149,13 @@ init([Parent, RemoteNode, PoolIdx]) ->
     % cluster node setup, where multiple nodes are concurrently setup.
     % Without a delay a node may try to connect to a cluster node that
     % hasn't finished setting up the vmq cluster listener.
-    InitDelay = vmq_config:get_env(
+    % Stagger pool connections to avoid RPC stampede on the remote node.
+    BaseDelay = vmq_config:get_env(
         outgoing_clustering_reconnect_base_delay, ?DEFAULT_RECONNECT_BASE
     ),
+    PoolN = max(1, vmq_config:get_env(outgoing_clustering_connection_count, 4)),
+    StaggerOffset = (BaseDelay * PoolIdx) div PoolN,
+    InitDelay = BaseDelay + StaggerOffset,
     erlang:send_after(InitDelay, self(), reconnect),
     loop(#state{
         parent = Parent,
@@ -348,6 +363,16 @@ handle_message({connect_async_done, AsyncPid, error}, #state{async_connect_pid =
     close_reconnect(State);
 handle_message(reconnect, #state{reachable = false} = State) ->
     connect(State#state{reconnect_tref = undefined});
+handle_message(reset_backoff, #state{reachable = false, reconnect_tref = TRef} = State) ->
+    %% Cancel pending backoff timer and reconnect immediately.
+    case TRef of
+        undefined -> ok;
+        _ -> erlang:cancel_timer(TRef)
+    end,
+    connect(State#state{reconnect_tref = undefined, backoff_count = 0});
+handle_message(reset_backoff, State) ->
+    %% Already connected, just reset count for next disconnect.
+    State#state{backoff_count = 0};
 handle_message({status, CallerPid, Ref}, #state{socket = Socket, reachable = Reachable} = State) ->
     Status =
         case Reachable of

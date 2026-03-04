@@ -12,6 +12,7 @@
 %% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
+%% TODO: merge upstream — new module for sharded vmq_reg_sync workers.
 -module(vmq_reg_sync_sup).
 
 -behaviour(supervisor).

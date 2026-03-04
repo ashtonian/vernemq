@@ -365,7 +365,7 @@
 %% @doc The maximum reconnect delay in milliseconds when a cluster node
 %% connection fails. The exponential backoff will not exceed this value.
 {mapping, "outgoing_clustering_reconnect_max_delay", "vmq_server.outgoing_clustering_reconnect_max_delay", [
-                                                                                                             {default, 10000},
+                                                                                                             {default, 5000},
                                                                                                              {datatype, integer},
                                                                                                              hidden
                                                                                                             ]}.

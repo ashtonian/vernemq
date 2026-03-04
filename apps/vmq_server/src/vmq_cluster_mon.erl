@@ -13,6 +13,8 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% TODO: merge upstream — this module adds dead node auto-cleanup,
+%% tiered recheck intervals, and nodeup backoff reset notification.
 -module(vmq_cluster_mon).
 
 -behaviour(gen_server).
@@ -96,6 +98,7 @@ handle_info({nodedown, Node}, #state{down_nodes = DownNodes} = State) ->
     {noreply, State#state{down_nodes = NewDownNodes}};
 handle_info({nodeup, Node}, #state{down_nodes = DownNodes} = State) ->
     ?LOG_INFO("cluster node ~p UP", [Node]),
+    vmq_cluster_node_sup:reset_node_backoff(Node),
     vmq_cluster:recheck(),
     {noreply, State#state{down_nodes = maps:remove(Node, DownNodes)}};
 handle_info({gen_event_EXIT, vmq_cluster, _}, State) ->

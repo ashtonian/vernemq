@@ -110,7 +110,7 @@
         {outgoing_clustering_buffer_size, 10000},
         {outgoing_clustering_connection_count, 4},
         {outgoing_clustering_reconnect_base_delay, 1000},
-        {outgoing_clustering_reconnect_max_delay, 30000},
+        {outgoing_clustering_reconnect_max_delay, 5000},
         {outgoing_clustering_buffer_drop_policy, lifo},
         {remote_enqueue_timeout, 5000},
         {cluster_ready_rpc_timeout, 5000},

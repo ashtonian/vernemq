@@ -13,6 +13,9 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 
+%% TODO: merge upstream — this module adds routing worker offload and
+%% spawn_link for enqueue operations. Consider bounded worker pool
+%% for enqueue path to cap concurrency.
 -module(vmq_cluster_com).
 -include("vmq_server.hrl").
 -behaviour(ranch_protocol).

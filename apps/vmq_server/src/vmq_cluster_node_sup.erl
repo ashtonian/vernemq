@@ -13,6 +13,8 @@
 %% See the License for the specific language governing permissions and
 %% limitations under the License.
 %%
+%% TODO: merge upstream — this module adds connection pool management
+%% and nodeup backoff reset for faster recovery.
 -module(vmq_cluster_node_sup).
 
 -behaviour(supervisor).
@@ -25,7 +27,8 @@
     get_cluster_node/2,
     del_cluster_node/1,
     node_status/1,
-    pool_size/0
+    pool_size/0,
+    reset_node_backoff/1
 ]).
 
 %% Supervisor callbacks
@@ -88,6 +91,20 @@ del_cluster_node(Node) ->
                     supervisor:delete_child(?MODULE, ChildId);
                 {error, not_found} ->
                     ok
+            end
+        end,
+        lists:seq(0, N - 1)
+    ),
+    ok.
+
+%% Reset backoff on all pool connections to Node, triggering immediate reconnect.
+reset_node_backoff(Node) ->
+    N = pool_size(),
+    lists:foreach(
+        fun(Idx) ->
+            case get_cluster_node(Node, Idx) of
+                {ok, Pid} -> vmq_cluster_node:reset_backoff(Pid);
+                {error, not_found} -> ok
             end
         end,
         lists:seq(0, N - 1)
