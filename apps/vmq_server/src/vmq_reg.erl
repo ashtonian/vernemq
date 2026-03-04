@@ -74,6 +74,8 @@
 }).
 
 -define(NR_OF_REG_RETRIES, 10).
+-define(MAX_DRAIN_POLL_ITERATIONS, 100).
+-define(MAX_BLOCK_UNTIL_ITERATIONS, 100).
 
 -spec subscribe(
     flag(),
@@ -1296,9 +1298,6 @@ initiate_direct_migration(SubscriberId, LocalQPid, OldNode) ->
 %% block_until_drain/3 polls the block condition WITHOUT re-writing
 %% metadata on every iteration (unlike block_until/4). Falls back to
 %% the metadata-driven path if max iterations are exceeded.
--define(MAX_DRAIN_POLL_ITERATIONS, 100).
--define(MAX_BLOCK_UNTIL_ITERATIONS, 100).
-
 -spec block_until_drain(subscriber_id(), [{node(), pid() | not_found}], fun()) -> ok | timeout.
 block_until_drain(SubscriberId, NodePids, BlockCond) ->
     block_until_drain(SubscriberId, NodePids, BlockCond, ?MAX_DRAIN_POLL_ITERATIONS).
