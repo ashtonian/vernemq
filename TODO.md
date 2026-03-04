@@ -52,4 +52,6 @@
 - [x] L6: `vmq_webhooks` pool size cached at startup — known limitation, by design
 - [x] L7: Fix `vmq_balance_srv` — remove stale TODO comment
 - [x] L8: `vmq_cluster_com` TODO updated with routing worker pool status
+- [x] Fix `vmq_reg_trie` init race — tag `subscribers_loaded` with unique ref to prevent stale messages from a previous `init_subs` spawn draining the event queue prematurely or crashing on `queue:in` with `undefined`
+- [x] Fix `vmq_cluster:check_ready` — guard `vmq_peer_service:members()` return; `{error, no_matching_hook_found}` was passed to `erpc:multicall` causing crash during startup before plugins are loaded
 - [ ] Consider extracting duplicate merge_subs/merge_node_subs to shared module (vmq_plumtree + vmq_swc)

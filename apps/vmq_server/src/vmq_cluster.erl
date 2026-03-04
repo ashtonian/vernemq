@@ -271,8 +271,13 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 check_ready() ->
-    Nodes = vmq_peer_service:members(),
-    check_ready(Nodes).
+    case vmq_peer_service:members() of
+        Nodes when is_list(Nodes) ->
+            check_ready(Nodes);
+        {error, Reason} ->
+            ?LOG_WARNING("cannot check cluster readiness: ~p", [Reason]),
+            ok
+    end.
 
 check_ready(Nodes) ->
     check_ready(Nodes, []),

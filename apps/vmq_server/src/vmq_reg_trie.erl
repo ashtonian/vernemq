@@ -46,7 +46,8 @@
     status = init,
     event_handler,
     event_queue = queue:new(),
-    num_workers
+    num_workers,
+    init_ref :: reference() | undefined
 }).
 
 %%%===================================================================
@@ -161,6 +162,7 @@ init([]) ->
     NumWorkers = application:get_env(vmq_server, reg_trie_workers, 8),
     persistent_term:put(subscribe_trie_ready, 0),
     Self = self(),
+    Ref = make_ref(),
     spawn_link(
         fun() ->
             %% Wait for all workers to be registered before dispatching
@@ -172,11 +174,11 @@ init([]) ->
                 end,
                 ok
             ),
-            Self ! subscribers_loaded
+            Self ! {subscribers_loaded, Ref}
         end
     ),
     EventHandler = vmq_reg:subscribe_subscriber_changes(),
-    {ok, #state{event_handler = EventHandler, num_workers = NumWorkers}}.
+    {ok, #state{event_handler = EventHandler, num_workers = NumWorkers, init_ref = Ref}}.
 
 handle_call({event, Event}, _From, #state{event_handler = Handler, num_workers = N} = State) ->
     %% used only for testing/microbenchmarking
@@ -185,6 +187,7 @@ handle_call({event, Event}, _From, #state{event_handler = Handler, num_workers =
 handle_call(init_subs, _From, #state{num_workers = N} = State) ->
     persistent_term:put(subscribe_trie_ready, 0),
     Coordinator = self(),
+    Ref = make_ref(),
     spawn_link(
         fun() ->
             ok = vmq_reg:fold_subscriptions(
@@ -194,10 +197,10 @@ handle_call(init_subs, _From, #state{num_workers = N} = State) ->
                 end,
                 ok
             ),
-            Coordinator ! subscribers_loaded
+            Coordinator ! {subscribers_loaded, Ref}
         end
     ),
-    {reply, ok, State#state{status = init, event_queue = queue:new()}};
+    {reply, ok, State#state{status = init, event_queue = queue:new(), init_ref = Ref}};
 handle_call(_Request, _From, State) ->
     Reply = ok,
     {reply, Reply, State}.
@@ -206,11 +209,12 @@ handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(
-    subscribers_loaded,
+    {subscribers_loaded, Ref},
     #state{
         event_handler = Handler,
         event_queue = Q,
-        num_workers = N
+        num_workers = N,
+        init_ref = Ref
     } = State
 ) ->
     lists:foreach(
@@ -225,7 +229,10 @@ handle_info(
     ?LOG_INFO("loaded ~p local subscriptions and ~p remote subscriptions into ~p", [
         NrOfSubscribers, NrOfRemoteSubscribers, ?MODULE
     ]),
-    {noreply, State#state{status = ready, event_queue = undefined}};
+    {noreply, State#state{status = ready, event_queue = queue:new(), init_ref = undefined}};
+handle_info({subscribers_loaded, _StaleRef}, State) ->
+    %% Stale message from a previous init_subs spawn — discard.
+    {noreply, State};
 handle_info(Event, #state{status = init, event_queue = Q} = State) ->
     {noreply, State#state{event_queue = queue:in(Event, Q)}};
 handle_info(Event, #state{event_handler = Handler, num_workers = N} = State) ->
