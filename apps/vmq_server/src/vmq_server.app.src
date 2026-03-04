@@ -42,6 +42,9 @@
         % reg trie worker opts
         {reg_trie_workers, 8},
 
+        % reg sync shard opts
+        {reg_sync_shards, 8},
+
         % queue supervisor supervisor opts
         {queue_sup_sup_children, 50},
 
@@ -104,6 +107,9 @@
             vmq_health_http
         ]},
         {outgoing_clustering_buffer_size, 10000},
+        {outgoing_clustering_connection_count, 4},
+        {outgoing_clustering_reconnect_base_delay, 1000},
+        {outgoing_clustering_reconnect_max_delay, 30000},
         {remote_enqueue_timeout, 5000},
         {outgoing_connect_options, []},
         {outgoing_connect_params_module, vmq_cluster_node},
