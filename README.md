@@ -153,3 +153,7 @@ instance.
 
 ### Thank you to all our contributors!
 [![contributors](https://contributors-img.web.app/image?repo=vernemq/vernemq)](https://github.com/vernemq/vernemq/graphs/contributors)
+
+## Fork CI artifact storage
+
+This fork retains CI test reports and event files through the shared [SeaweedFS artifact actions](https://github.com/ashtonian/go-ci-actions/blob/v1.3.0/docs/artifacts.md). The `CI_ARTIFACT_ENDPOINT` repository variable selects the gateway; jobs use GitHub OIDC and grant `id-token: write`. The publishing workflow downloads the originating run's verified archives and keeps their named directory layout. Explicit retention remains unchanged. Summaries expose S3 URIs and digests; use the shared download action or authenticated operator S3 access for new reports. `gh run download` applies only to historical GitHub artifacts.
