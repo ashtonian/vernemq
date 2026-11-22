@@ -10,7 +10,7 @@ on:
     types: [completed]
 
 env:
-  CI_ARTIFACT_ENDPOINT: ${{ vars.CI_ARTIFACT_ENDPOINT }}
+  CI_ARTIFACT_ENDPOINT: ${{ secrets.CI_ARTIFACT_ENDPOINT }}
 
 jobs:
   publish-test-results:
